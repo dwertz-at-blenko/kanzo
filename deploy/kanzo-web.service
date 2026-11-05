@@ -1,0 +1,37 @@
+# Version: v1 · created 2026-11-05 18:55 EST · updated 2026-11-05 18:55 EST
+# Changes: v1 initial: kanzo.blenko.cloud origin unit.
+# This file: /home/claude/dev/kanzo/deploy/kanzo-web.service
+# Session: 08cf0c04-265c-4b64-8e18-d5679b1a650d · vps as claude · cwd /home/claude/dev
+# Resume: ssh -t blenko-claude 'cd /home/claude/dev && claude --resume 08cf0c04-265c-4b64-8e18-d5679b1a650d'   (from the Mac)
+[Unit]
+# systemd USER unit for the origin of kanzo.blenko.cloud. Linger is enabled for `claude`, so it
+# starts at boot. Install: cp/render into ~/.config/systemd/user/kanzo-web.service,
+# then `systemctl --user daemon-reload && systemctl --user enable --now kanzo-web`.
+Description=Kanzo kanban board + MCP (kanzo.blenko.cloud origin, loopback 8111)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/claude/dev/kanzo
+# The command MUST bind 127.0.0.1 (never 0.0.0.0), e.g. --bind 127.0.0.1 / --host 127.0.0.1.
+# Data folder (board, config.toml with url = "https://kanzo.blenko.cloud") lives outside the repo.
+Environment=KANZO_HOME=/home/claude/.local/share/kanzo
+# The build is patched (branch public-url). The sidebar's one-click update would replace it with
+# upstream's binary, which 403s behind the tunnel, so point the release check at nothing.
+# Updating = pull upstream into the branch, cargo build --release, systemctl --user restart kanzo-web.
+Environment=KANZO_RELEASES_URL=http://127.0.0.1:9
+ExecStart=/home/claude/dev/kanzo/target/release/kanzo --no-open --home /home/claude/.local/share/kanzo
+Restart=always
+RestartSec=3
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+
+[Install]
+WantedBy=default.target

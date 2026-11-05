@@ -1,0 +1,29 @@
+# Version: v1 · created 2026-11-05 18:55 EST · updated 2026-11-05 18:55 EST
+# Changes: v1 initial: kanzo.blenko.cloud tunnel unit.
+# This file: /home/claude/dev/kanzo/deploy/kanzo-tunnel.service
+# Session: 08cf0c04-265c-4b64-8e18-d5679b1a650d · vps as claude · cwd /home/claude/dev
+# Resume: ssh -t blenko-claude 'cd /home/claude/dev && claude --resume 08cf0c04-265c-4b64-8e18-d5679b1a650d'   (from the Mac)
+[Unit]
+# systemd USER unit: cloudflared for tunnel kanzo (kanzo.blenko.cloud). No sudo to install.
+Description=cloudflared tunnel kanzo (kanzo.blenko.cloud)
+After=network-online.target kanzo-web.service
+Wants=network-online.target
+Requires=kanzo-web.service
+
+[Service]
+Type=simple
+# The launcher reads the run token from ~/.cloudflared/kanzo.json (0600) and exports
+# it as TUNNEL_TOKEN, so no credential appears in a process listing.
+ExecStart=/home/claude/dev/kanzo/deploy/tunnel-exec.sh
+Restart=always
+RestartSec=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+LockPersonality=true
+
+[Install]
+WantedBy=default.target
