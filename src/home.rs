@@ -26,6 +26,12 @@ listen = "127.0.0.1"
 # Also serve MCP over HTTP at http://localhost:<port>/mcp, for agents
 # that cannot start `kanzo mcp` themselves.
 mcp_http = true
+
+# The board's address when a reverse proxy serves it, like a tunnel at
+# https://kanzo.example.com. The board then accepts that name as Host and
+# Origin, and prints it; the proxy still reaches the board at
+# http://<listen>:<port>. Leave it out when the board is only local.
+# url = "https://kanzo.example.com"
 "#;
 
 const GITIGNORE: &str = "\
@@ -54,11 +60,26 @@ pub struct Config {
     #[serde(rename = "statuses")]
     _statuses: Option<toml::Value>,
     pub mcp_http: bool,
+    /// Where a reverse proxy serves the board, like `https://kanzo.example.com`.
+    pub url: Option<String>,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { port: DEFAULT_PORT, listen: IpAddr::V4(Ipv4Addr::LOCALHOST), _statuses: None, mcp_http: true }
+        Self { port: DEFAULT_PORT, listen: IpAddr::V4(Ipv4Addr::LOCALHOST), _statuses: None, mcp_http: true, url: None }
+    }
+}
+
+impl Config {
+    /// The configured `url` as an origin, `scheme://host[:port]`, with no path or trailing slash.
+    pub fn public_url(&self) -> Result<Option<String>> {
+        let Some(raw) = self.url.as_deref().map(str::trim).filter(|u| !u.is_empty()) else { return Ok(None) };
+        let url = raw.trim_end_matches('/');
+        let rest = url.strip_prefix("http://").or_else(|| url.strip_prefix("https://"));
+        match rest {
+            Some(host) if !host.is_empty() && !host.contains(['/', '?', '#', '@']) => Ok(Some(url.to_string())),
+            _ => bail!("url = {raw:?} must be like https://kanzo.example.com, with no path"),
+        }
     }
 }
 
@@ -89,6 +110,7 @@ impl Home {
         let path = dir.join("config.toml");
         let text = fs::read_to_string(&path).with_context(|| format!("cannot read {}", path.display()))?;
         let config: Config = toml::from_str(&text).with_context(|| format!("{} is not valid", path.display()))?;
+        config.public_url().with_context(|| format!("{} is not valid", path.display()))?;
 
         let home = Self { dir, config };
         home.store()?.migrate()?;

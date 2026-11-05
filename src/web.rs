@@ -32,8 +32,9 @@ const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'unsa
 
 pub async fn serve(home: Home, open: bool) -> Result<()> {
     let port = home.config.port;
-    let guard = Arc::new(Guard::new(port, home.config.listen, Net::load(&home)));
-    let url = format!("http://localhost:{port}");
+    let public = home.config.public_url()?;
+    let guard = Arc::new(Guard::new(port, home.config.listen, Net::load(&home)).public(public.clone()));
+    let url = public.unwrap_or_else(|| format!("http://localhost:{port}"));
     let listener = match TcpListener::bind(SocketAddr::new(guard.address(), port)).await {
         Ok(l) => l,
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
@@ -180,10 +181,13 @@ fn router(home: Home, guard: Arc<Guard>, shutdown: CancellationToken) -> Router 
 }
 
 /// DNS rebinding needs a domain name the attacker controls, so the board only accepts
-/// `localhost`, IP addresses and, when it listens on the network, this machine's own names.
+/// `localhost`, IP addresses and, when it listens on the network, this machine's own names,
+/// plus the one name a reverse proxy serves it under (`url` in config.toml).
 struct Guard {
     port: u16,
     listen: IpAddr,
+    /// `url` from config.toml as `scheme://host[:port]`, and its `host[:port]` part.
+    public: Option<(String, String)>,
     net: Mutex<Net>,
     guests: Mutex<HashMap<IpAddr, (Instant, Option<String>)>>,
     names: OnceLock<Vec<String>>,
@@ -198,11 +202,20 @@ impl Guard {
         Self {
             port,
             listen,
+            public: None,
             net: Mutex::new(net),
             guests: Mutex::default(),
             names: OnceLock::new(),
             rebind: Mutex::default(),
         }
+    }
+
+    fn public(mut self, url: Option<String>) -> Self {
+        self.public = url.map(|origin| {
+            let host = origin.split_once("://").map_or(origin.as_str(), |(_, h)| h).to_string();
+            (origin, host)
+        });
+        self
     }
 
     fn net(&self) -> Net {
@@ -262,6 +275,9 @@ impl Guard {
     }
 
     fn allows(&self, host: &str) -> bool {
+        if self.public.as_ref().is_some_and(|(_, h)| h.eq_ignore_ascii_case(host.trim_end_matches('.'))) {
+            return true;
+        }
         let (name, port) = match host.rsplit_once(':') {
             Some((n, p)) if !p.contains(']') => (n, Some(p)),
             _ => (host, None),
@@ -302,9 +318,10 @@ async fn protect(State(guard): State<Arc<Guard>>, req: Request, next: Next) -> R
         let header = |name| req.headers().get(name).and_then(|h: &HeaderValue| h.to_str().ok());
         let host = header(header::HOST).unwrap_or("");
         let same_origin = |o: &str| {
-            o.len() == host.len() + 7
-                && o.as_bytes()[..7].eq_ignore_ascii_case(b"http://")
-                && o.as_bytes()[7..].eq_ignore_ascii_case(host.as_bytes())
+            guard.public.as_ref().is_some_and(|(origin, _)| origin.eq_ignore_ascii_case(o))
+                || (o.len() == host.len() + 7
+                    && o.as_bytes()[..7].eq_ignore_ascii_case(b"http://")
+                    && o.as_bytes()[7..].eq_ignore_ascii_case(host.as_bytes()))
         };
         guard.allows(host) && header(header::ORIGIN).is_none_or(same_origin) && (guest.is_none() || guard.lan())
     };
@@ -822,6 +839,15 @@ mod tests {
 
         lan.set(Net::Private);
         assert!(!lan.allows("192.168.1.5:4242"));
+
+        let proxied =
+            Guard::new(4242, Ipv4Addr::LOCALHOST.into(), Net::Private).public(Some("https://kanzo.example.com".into()));
+        for ok in ["kanzo.example.com", "KANZO.example.com", "kanzo.example.com.", "localhost:4242"] {
+            assert!(proxied.allows(ok), "{ok}");
+        }
+        for bad in ["kanzo.example.com:4242", "evil.com", "example.com", "kanzo.example.com.evil.com"] {
+            assert!(!proxied.allows(bad), "{bad}");
+        }
         assert_eq!(lan.address(), IpAddr::from(Ipv4Addr::LOCALHOST));
     }
 }
