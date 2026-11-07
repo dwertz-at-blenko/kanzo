@@ -32,6 +32,10 @@ mcp_http = true
 # Origin, and prints it; the proxy still reaches the board at
 # http://<listen>:<port>. Leave it out when the board is only local.
 # url = "https://kanzo.example.com"
+
+# How the board looks: "kanzo" (the default) or "lcars", a Star Trek style
+# computer display. A visit to /?theme=kanzo or /?theme=lcars overrides it.
+# theme = "lcars"
 "#;
 
 const GITIGNORE: &str = "\
@@ -62,11 +66,36 @@ pub struct Config {
     pub mcp_http: bool,
     /// Where a reverse proxy serves the board, like `https://kanzo.example.com`.
     pub url: Option<String>,
+    /// The board's look: `kanzo` (default) or `lcars`.
+    pub theme: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Theme {
+    Kanzo,
+    Lcars,
+}
+
+impl Theme {
+    pub fn parse(name: &str) -> Option<Self> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "kanzo" => Some(Self::Kanzo),
+            "lcars" => Some(Self::Lcars),
+            _ => None,
+        }
+    }
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { port: DEFAULT_PORT, listen: IpAddr::V4(Ipv4Addr::LOCALHOST), _statuses: None, mcp_http: true, url: None }
+        Self {
+            port: DEFAULT_PORT,
+            listen: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            _statuses: None,
+            mcp_http: true,
+            url: None,
+            theme: None,
+        }
     }
 }
 
@@ -79,6 +108,15 @@ impl Config {
         match rest {
             Some(host) if !host.is_empty() && !host.contains(['/', '?', '#', '@']) => Ok(Some(url.to_string())),
             _ => bail!("url = {raw:?} must be like https://kanzo.example.com, with no path"),
+        }
+    }
+
+    pub fn theme(&self) -> Result<Theme> {
+        match self.theme.as_deref() {
+            None => Ok(Theme::Kanzo),
+            Some(name) => {
+                Theme::parse(name).with_context(|| format!("theme = {name:?} must be \"kanzo\" or \"lcars\""))
+            }
         }
     }
 }
@@ -111,6 +149,7 @@ impl Home {
         let text = fs::read_to_string(&path).with_context(|| format!("cannot read {}", path.display()))?;
         let config: Config = toml::from_str(&text).with_context(|| format!("{} is not valid", path.display()))?;
         config.public_url().with_context(|| format!("{} is not valid", path.display()))?;
+        config.theme().with_context(|| format!("{} is not valid", path.display()))?;
 
         let home = Self { dir, config };
         home.store()?.migrate()?;
@@ -274,6 +313,19 @@ mod tests {
         fs::write(tmp.path().join("config.toml"), "statuses = [\"todo\", \"doing\", \"done\"]\n").unwrap();
         let home = Home::open(tmp.path().to_path_buf()).unwrap();
         assert_eq!(home.store().unwrap().statuses(), ["todo", "doing", "review", "done"]);
+    }
+
+    #[test]
+    fn theme_defaults_to_kanzo_and_rejects_unknown_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = Home::open(tmp.path().to_path_buf()).unwrap();
+        assert_eq!(home.config.theme().unwrap(), Theme::Kanzo);
+
+        fs::write(tmp.path().join("config.toml"), "theme = \"LCARS\"\n").unwrap();
+        assert_eq!(Home::open(tmp.path().to_path_buf()).unwrap().config.theme().unwrap(), Theme::Lcars);
+
+        fs::write(tmp.path().join("config.toml"), "theme = \"borg\"\n").unwrap();
+        assert!(Home::open(tmp.path().to_path_buf()).is_err());
     }
 
     #[test]

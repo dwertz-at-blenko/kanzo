@@ -212,9 +212,12 @@ port = 4242
 listen = "127.0.0.1"   # sharing opens the board to your network; "0.0.0.0" keeps it open
 mcp_http = true        # MCP at /mcp
 # url = "https://kanzo.example.com"   # behind a reverse proxy or tunnel: the name the board answers to
+# theme = "lcars"      # "kanzo" (default) or "lcars", a Star Trek style computer display
 ```
 
 Behind a reverse proxy or a tunnel, set `url` to the address people use. The board accepts that name as `Host` and `Origin`, prints it instead of `http://localhost:<port>`, and the proxy keeps reaching it at `http://127.0.0.1:<port>`. Put the login in front of it in the proxy: the board itself has none.
+
+`theme = "lcars"` dresses the board as a Star Trek LCARS display; `/?theme=lcars` or `/?theme=kanzo` tries either look for one visit. See [docs/lcars](docs/lcars/README.md).
 
 Settings on the board lists each task's properties, like tags or comments. Turn one off to hide it there and leave it out of what agents get; nothing is deleted.
 
