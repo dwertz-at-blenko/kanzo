@@ -1584,6 +1584,26 @@ async function installUpdate(available) {
   location.reload();
 }
 
+// Footer theme toggle: flips <html data-theme> between the stock look and LCARS and remembers
+// it (theme.js in <head> replays the choice on the next load, before first paint).
+{
+  const toggle = $("#theme-toggle");
+  const label = () => {
+    const lcars = document.documentElement.dataset.theme === "lcars";
+    toggle.textContent = lcars ? "stock" : "lcars";
+    toggle.setAttribute("aria-label", lcars ? "Switch to the stock Kanzo theme" : "Switch to the LCARS theme");
+  };
+  if (toggle) {
+    label();
+    toggle.addEventListener("click", () => {
+      const next = document.documentElement.dataset.theme === "lcars" ? "kanzo" : "lcars";
+      document.documentElement.dataset.theme = next;
+      localStorageSet("kanzo.theme", next);
+      label();
+    });
+  }
+}
+
 checkUpdate();
 setInterval(checkUpdate, 24 * 60 * 60 * 1000);
 loadSyncRemote();

@@ -1,11 +1,16 @@
 # LCARS theme for Kanzo
 
-A Star Trek TNG style computer display for the board: an elbow frame, a left column of bars, column header bars with numeric readouts, and dark capped cards. Pure CSS (`src/lcars.css`, about 20 KB) plus the self-hosted Antonio Bold font (`src/fonts/antonio.woff2`, SIL OFL 1.1, license in `src/fonts/OFL.txt`). The default Kanzo look is untouched: every rule sits under `html[data-theme="lcars"]`, and the stylesheet only loads when the theme is on.
+A Star Trek TNG style computer display for the board: an elbow frame, a left column of bars, column header bars with numeric readouts, and dark capped cards. Pure CSS (`src/lcars.css`, about 20 KB) plus the self-hosted Antonio Bold font (`src/fonts/antonio.woff2`, SIL OFL 1.1, license in `src/fonts/OFL.txt`). The default Kanzo look is untouched: every rule sits under `html[data-theme="lcars"]` (plus a few lines for the footer and its theme toggle in the stock look).
 
 | Desktop, 1440 x 900 | Phone, 390 x 844 |
 | --- | --- |
-| ![Board, desktop](lcars-v0.1-desktop.png) | ![Board, phone](lcars-v0.1-mobile.png) |
-| ![Task panel, desktop](lcars-v0.1-desktop-panel.png) | ![Task panel, phone](lcars-v0.1-mobile-panel.png) |
+| ![Board, desktop](lcars-v0.2-desktop.png) | ![Board, phone](lcars-v0.2-mobile.png) |
+| ![Task panel, desktop, v0.1](lcars-v0.1-desktop-panel.png) | ![Task panel, phone, v0.1](lcars-v0.1-mobile-panel.png) |
+| ![Stock look with the toggle, desktop](lcars-v0.2-desktop-stock.png) | |
+
+## Switching
+
+The footer at the bottom of the sidebar reads `LCARS THEME vX.Y · KANZO <version>` and carries a toggle (`#theme-toggle`, `data-agent="theme-toggle"`): it flips `<html data-theme>` between `lcars` and `kanzo` and remembers the choice in `localStorage` under `kanzo.theme`. `/theme.js`, loaded blocking in `<head>`, replays that choice before first paint, so there is no flash. `/?theme=lcars` or `/?theme=kanzo` sets the remembered choice too. `theme` in `config.toml` is only the default for a browser that has not chosen yet.
 
 ## Turn it on
 
@@ -17,7 +22,7 @@ theme = "lcars"   # or "kanzo", the default
 
 Restart Kanzo. Any other value is refused at startup. To compare looks without changing the file, open `/?theme=lcars` or `/?theme=kanzo`; it lasts for that visit only.
 
-With the theme on, the server builds a second copy of the page once at startup: `<html lang="en" data-theme="lcars">`, a `<meta name="kanzo-version">` tag and `<link rel="stylesheet" href="/lcars.css">` before `</head>`, and the footer line `LCARS THEME v0.1 · KANZO <version>` at the bottom of the sidebar. New routes: `/lcars.css` and `/fonts/antonio.woff2`. The CSP gains `font-src 'self'`.
+The server builds one copy of the page per default theme at startup: `<html lang="en" data-theme="kanzo|lcars">`, a `<meta name="kanzo-version">` tag, `<script src="/theme.js">` and `<link rel="stylesheet" href="/lcars.css">` before `</head>` (the stylesheet is inert unless the marker says `lcars`), and the footer with the version line and toggle at the bottom of the sidebar. New routes: `/lcars.css`, `/theme.js` and `/fonts/antonio.woff2`. The CSP gains `font-src 'self'`.
 
 ## Colors
 
@@ -28,7 +33,7 @@ With the theme on, the server builds a second copy of the page once at startup: 
 | `--lcars-mariner` | #3366CC | Lines: rest of the left column, input and dialog borders, the backlog column |
 | `--lcars-midnight` | #0048F0 | The done column (done cards are also dimmed) |
 | `--lcars-neon-carrot` | #FF9900 | Active work: the doing column, New task, the selected project, the page title |
-| `--lcars-atomic-tangerine` | #FF6633 | Reserved for active work (not used in v0.1) |
+| `--lcars-atomic-tangerine` | #FF6633 | Reserved for active work (not used yet) |
 | `--lcars-lilac` | #CC99CC | Tags (hue 0 solid, hue 2 outlined), the review column, the update bar |
 | `--lcars-honey` | #FFCC99 | Tags (hue 1 solid, hue 3 outlined), top bar end cap, human-task mark, toasts |
 | `--lcars-pumpkin` | #E63D00 | Alerts only: alert tag chips, the cap's pulse |
@@ -58,11 +63,11 @@ Example: `document.querySelectorAll('[data-agent="task-card"][data-status="doing
 ## Iterate
 
 1. Edit `src/lcars.css`. For fast looks, intercept `/lcars.css` in Playwright and serve the local file, so no rebuild is needed until the end.
-2. Bump the version in three places together: line 1 of `src/lcars.css` (`/* LCARS theme vX.Y */`), `--lcars-theme-version` in the same file, and `LCARS_VERSION` in `src/web.rs`. The test `lcars_page_injects_theme_stylesheet_and_version` fails if they disagree.
+2. Bump the version in three places together: line 1 of `src/lcars.css` (`/* LCARS theme vX.Y */`), `--lcars-theme-version` in the same file, and `LCARS_VERSION` in `src/web.rs`. The test `pages_inject_theme_switch_stylesheet_and_version` fails if they disagree.
 3. `cargo build --release`, run a board with `theme = "lcars"`, and shoot 1440 x 900 and 390 x 844 of the board and an open task. Save them here as `lcars-vX.Y-desktop.png`, `-mobile.png`, `-desktop-panel.png`, `-mobile-panel.png`, and update the links above.
 
 ---
 
-Version: v0.1 · created 2026-11-07 · updated 2026-11-07
-Changes: v0.1 first cut of the LCARS theme docs.
-This file: /home/claude/dev/kanzo/.claude/worktrees/lcars/docs/lcars/README.md (branch lcars-theme)
+Version: v0.2 · created 2026-11-07 · updated 2026-11-07
+Changes: v0.1 first cut of the LCARS theme docs. v0.2 theme toggle in the footer, /theme.js, remembered choice.
+This file: /home/claude/dev/kanzo/docs/lcars/README.md

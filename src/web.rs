@@ -26,10 +26,12 @@ const IMAGE_LIMIT: usize = 25 * 1024 * 1024;
 const APP_JS: &str = include_str!("app.js");
 const LOGO: &[u8] = include_bytes!("logo.png");
 const LCARS_CSS: &str = include_str!("lcars.css");
+/// Applies the remembered theme before first paint; the footer toggle in app.js stores it.
+const THEME_JS: &str = include_str!("theme.js");
 /// Antonio Bold, SIL Open Font License (fonts/OFL.txt).
 const ANTONIO: &[u8] = include_bytes!("fonts/antonio.woff2");
 /// The LCARS theme's version, also on the first line of lcars.css and in its `--lcars-theme-version`.
-const LCARS_VERSION: &str = "0.1";
+const LCARS_VERSION: &str = "0.2";
 
 /// Scripts only from this server, so even a bug in the Markdown renderer cannot run injected script.
 const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; \
@@ -172,10 +174,12 @@ fn router(home: Home, guard: Arc<Guard>, shutdown: CancellationToken) -> Router 
         .route("/api/sync", get(sync_status).post(sync_now).put(sync_repo))
         .route("/api/settings", patch(update_settings))
         .route_layer(middleware::from_fn_with_state(guard.clone(), forward));
-    lcars_index();
+    page(Theme::Kanzo);
+    page(Theme::Lcars);
     Router::new()
         .route("/", get(index))
         .route("/lcars.css", get(|| async { ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], LCARS_CSS) }))
+        .route("/theme.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], THEME_JS) }))
         .route("/fonts/antonio.woff2", get(|| async { ([(header::CONTENT_TYPE, "font/woff2")], ANTONIO) }))
         .route("/app.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], APP_JS) }))
         .route("/logo.png", get(|| async { ([(header::CONTENT_TYPE, "image/png")], LOGO) }))
@@ -193,31 +197,41 @@ struct PageQuery {
     theme: Option<String>,
 }
 
-/// `theme` in config.toml picks the page; `/?theme=lcars` or `/?theme=kanzo` overrides it for one visit.
+/// `theme` in config.toml picks the default; `/?theme=lcars` or `/?theme=kanzo` overrides it and
+/// theme.js remembers that choice (and the footer toggle's) in the browser.
 async fn index(State(home): Shared, Query(q): Query<PageQuery>) -> Html<&'static str> {
     let theme =
         q.theme.as_deref().and_then(Theme::parse).unwrap_or_else(|| home.config.theme().unwrap_or(Theme::Kanzo));
-    Html(match theme {
-        Theme::Kanzo => INDEX,
-        Theme::Lcars => lcars_index(),
-    })
+    Html(page(theme))
 }
 
-/// The board page with the LCARS stylesheet, its marker on `<html>` and the version footer, built once.
-fn lcars_index() -> &'static str {
-    static PAGE: OnceLock<String> = OnceLock::new();
-    PAGE.get_or_init(|| {
+/// The board page with the theme marker on `<html>`, the theme switch script, the LCARS stylesheet
+/// (inert unless the marker says `lcars`) and the version footer with its toggle, built once per theme.
+fn page(theme: Theme) -> &'static str {
+    static PAGES: [OnceLock<String>; 2] = [OnceLock::new(), OnceLock::new()];
+    let (slot, name) = match theme {
+        Theme::Kanzo => (&PAGES[0], "kanzo"),
+        Theme::Lcars => (&PAGES[1], "lcars"),
+    };
+    slot.get_or_init(|| {
         let v = update::CURRENT;
         INDEX
-            .replacen("<html lang=\"en\">", "<html lang=\"en\" data-theme=\"lcars\">", 1)
+            .replacen("<html lang=\"en\">", &format!("<html lang=\"en\" data-theme=\"{name}\">"), 1)
             .replacen(
                 "</head>",
-                &format!("<meta name=\"kanzo-version\" content=\"{v}\">\n<link rel=\"stylesheet\" href=\"/lcars.css\">\n</head>"),
+                &format!(
+                    "<meta name=\"kanzo-version\" content=\"{v}\">\n<script src=\"/theme.js\"></script>\n\
+                     <link rel=\"stylesheet\" href=\"/lcars.css\">\n</head>"
+                ),
                 1,
             )
             .replacen(
                 "</aside>",
-                &format!("  <div class=\"lcars-footer\">LCARS THEME v{LCARS_VERSION} · KANZO {v}</div>\n</aside>"),
+                &format!(
+                    "  <div class=\"lcars-footer\" data-agent=\"theme-footer\"><span>LCARS THEME v{LCARS_VERSION} · KANZO {v}</span>\
+                     <button type=\"button\" class=\"theme-toggle\" id=\"theme-toggle\" data-agent=\"theme-toggle\" \
+                     title=\"Switch theme\">theme</button></div>\n</aside>"
+                ),
                 1,
             )
     })
@@ -862,12 +876,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lcars_page_injects_theme_stylesheet_and_version() {
-        let page = lcars_index();
-        assert!(page.contains("<html lang=\"en\" data-theme=\"lcars\">"));
-        assert!(page.contains("<link rel=\"stylesheet\" href=\"/lcars.css\">\n</head>"));
-        assert!(page.contains(&format!("<meta name=\"kanzo-version\" content=\"{}\">", update::CURRENT)));
-        assert!(page.contains(&format!("LCARS THEME v{LCARS_VERSION} · KANZO {}</div>\n</aside>", update::CURRENT)));
+    fn pages_inject_theme_switch_stylesheet_and_version() {
+        for (theme, name) in [(Theme::Kanzo, "kanzo"), (Theme::Lcars, "lcars")] {
+            let page = page(theme);
+            assert!(page.contains(&format!("<html lang=\"en\" data-theme=\"{name}\">")));
+            assert!(page.contains(
+                "<script src=\"/theme.js\"></script>\n<link rel=\"stylesheet\" href=\"/lcars.css\">\n</head>"
+            ));
+            assert!(page.contains(&format!("<meta name=\"kanzo-version\" content=\"{}\">", update::CURRENT)));
+            assert!(page.contains(&format!("LCARS THEME v{LCARS_VERSION} · KANZO {}</span>", update::CURRENT)));
+            assert!(page.contains("id=\"theme-toggle\""));
+        }
         assert!(LCARS_CSS.starts_with(&format!("/* LCARS theme v{LCARS_VERSION} */")));
         assert!(LCARS_CSS.contains(&format!("--lcars-theme-version: \"{LCARS_VERSION}\"")));
         assert!(!INDEX.contains("lcars"));

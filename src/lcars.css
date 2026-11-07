@@ -1,4 +1,4 @@
-/* LCARS theme v0.1 */
+/* LCARS theme v0.2 */
 /*
  * Version: v0.1 · created 2026-11-07 · updated 2026-11-07
  * Changes: v0.1 first cut: elbow frame, sidebar bars, column header bars with readouts, capped cards, alert pulse.
@@ -29,8 +29,14 @@
   50% { border-left-color: var(--lcars-pumpkin); box-shadow: -6px 0 14px -6px var(--lcars-pumpkin); }
 }
 
+/* Footer and theme toggle in the stock Kanzo look (the LCARS block below restyles them). */
+.lcars-footer { margin-top: auto; padding: 10px 10px 0; display: flex; align-items: center; justify-content: flex-end; gap: 8px; color: var(--faint); font-size: 11px; }
+.theme-toggle { font: inherit; font-weight: 600; color: var(--muted); background: var(--hover); border: 0; border-radius: 99px; padding: 2px 9px; cursor: pointer; text-transform: uppercase; letter-spacing: .06em; }
+.theme-toggle:hover, .theme-toggle:focus-visible { background: var(--active); color: var(--text); }
+@media (max-width: 700px) { .lcars-footer { margin: 4px 0 0; padding: 0; } }
+
 html[data-theme="lcars"] {
-  --lcars-theme-version: "0.1";
+  --lcars-theme-version: "0.2";
   --lcars-cool-blue: #6699FF;
   --lcars-midnight: #0048F0;
   --lcars-anakiwa: #99CCFF;
@@ -101,6 +107,8 @@ html[data-theme="lcars"] {
   #settings { margin-top: 0; background: var(--lcars-frame); color: #000; border-radius: 0 0 0 40px; min-height: 52px; }
   #settings:hover, #settings.open { color: #000; }
   .lcars-footer { padding: 6px 12px 0; color: var(--lcars-cool-blue); font-size: 11.5px; letter-spacing: .14em; text-align: right; text-transform: none; }
+  .theme-toggle { font-family: inherit; font-size: 11px; letter-spacing: .14em; color: #000; background: var(--lcars-cool-blue); border-radius: 99px; padding: 1px 10px; }
+  .theme-toggle:hover, .theme-toggle:focus-visible { background: var(--lcars-anakiwa); color: #000; }
 
   .nav { gap: 4px; }
   .nav a .name { flex: 1; text-align: right; }
@@ -289,7 +297,7 @@ html[data-theme="lcars"] {
     #new-project-toggle { display: flex; }
     & aside > .ghost { width: auto; min-height: 32px; margin: 0; align-items: center; border-radius: 99px; padding: 4px 14px; font-size: 13px; }
     #settings { min-height: 32px; border-radius: 99px; }
-    .lcars-footer { margin-left: auto; padding: 0; font-size: 10.5px; letter-spacing: .1em; }
+    .lcars-footer { margin: 0 0 0 auto; padding: 0; font-size: 10.5px; letter-spacing: .1em; }
     & header { padding: 12px 12px 10px; }
     & header::before, & header::after { display: none; }
     & header h1 { font-size: 24px; }
