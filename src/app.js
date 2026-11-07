@@ -337,6 +337,7 @@ function renderNav() {
   const open = projects.reduce((n, p) => n + p.open, 0);
   const link = (slug, name, count, glyph) =>
     el("a", { href: "#" + slug, class: state.project === slug ? "active" : null,
+              "data-agent": "project", "data-project-id": slug,
               onclick: (e) => { e.preventDefault(); setProject(slug); } },
       glyph,
       el("span", { class: "name" }, name),
@@ -531,10 +532,11 @@ function renderColumns() {
     state.layout = layout;
     columns.replaceChildren(...statuses.map((status) => {
       const collapsible = status === "backlog" || status === "done";
-      const col = el("section", { class: "column", "data-status": status },
+      const col = el("section", { class: "column", "data-status": status,
+                                  "data-agent": "kanban-column", "data-column-id": status },
         el("h2", {},
           statusIcon(status), status,
-          el("span", { class: "count" }),
+          el("span", { class: "count", "data-agent": "column-count" }),
           collapsible ? el("button", { class: "collapse", onclick: (e) => { e.stopPropagation(); setCollapsed(status, !isCollapsed(status)); } }) : null),
         el("div", { class: "cards" }),
       );
@@ -552,7 +554,7 @@ function renderColumns() {
   const query = filterQuery();
   $("#filter").classList.toggle("on", query.length > 0);
   for (const status of statuses) {
-    const col = columns.querySelector(`[data-status="${CSS.escape(status)}"]`);
+    const col = columns.querySelector(`.column[data-status="${CSS.escape(status)}"]`);
     const mine = tasks.filter((t) => t.status === status && (!humanOnly || t.human));
     const last = status === statuses[statuses.length - 1];
     const hidden = last && !state.allDone ? state.board.done_hidden || 0 : 0;
@@ -656,11 +658,17 @@ function highlight(name, root, words) {
 }
 
 function summary(t, link = null) {
-  const chips = [...(link ? [link] : []), ...(isPropertyHidden("tags") ? [] : t.tags.map((tag) => el("span", { class: "tag" }, tag)))];
+  const chips = [...(link ? [link] : []), ...(isPropertyHidden("tags") ? [] : t.tags.map(tagChip))];
   return [
     t.description ? el("span", { class: "desc" }, plainText(t.description)) : null,
     chips.length ? el("span", { class: "tags" }, chips) : null,
   ];
+}
+
+// data-tag-hue sorts tags into four stable buckets, for themes that color tags.
+function tagChip(tag) {
+  const hue = [...tag].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 0) % 4;
+  return el("span", { class: "tag", "data-tag": tag, "data-tag-hue": String(hue) }, tag);
 }
 
 // Only on cards: search rows are buttons, and a link can't sit inside one.
@@ -726,6 +734,8 @@ function plainText(md) {
 
 function card(t, showProject) {
   const node = el("div", { class: "card" + (state.task === t.id ? " open" : ""), draggable: "true", "data-id": t.id,
+                           "data-agent": "task-card", "data-task-id": t.id, "data-status": t.status,
+                           "data-project": t.project, "data-human": t.human ? "true" : null, "data-tags": t.tags.join(","),
                            onclick: () => openTask(t.id) },
     el("div", { class: "head" },
       el("div", { class: "title" }, t.title),
@@ -865,6 +875,7 @@ async function openTask(id) {
   if (state.task !== id) return;
   panel.classList.add("shown");
   panel.setAttribute("aria-hidden", "false");
+  panel.dataset.taskId = id;
 }
 
 // Blurring a field saves it, so do that before the panel lets go of a task.
@@ -880,6 +891,7 @@ function closeTask() {
   updateHash();
   panel.classList.remove("shown");
   panel.setAttribute("aria-hidden", "true");
+  delete panel.dataset.taskId;
   document.querySelectorAll(".card.open").forEach((c) => c.classList.remove("open"));
 }
 

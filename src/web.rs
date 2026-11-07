@@ -16,7 +16,7 @@ use serde_json::json;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
-use crate::home::Home;
+use crate::home::{Home, Theme};
 use crate::share::{self, Change, Net};
 use crate::store::{self, Error, ImagesOf, Store, TaskPatch};
 use crate::{sync, update};
@@ -25,10 +25,15 @@ const INDEX: &str = include_str!("index.html");
 const IMAGE_LIMIT: usize = 25 * 1024 * 1024;
 const APP_JS: &str = include_str!("app.js");
 const LOGO: &[u8] = include_bytes!("logo.png");
+const LCARS_CSS: &str = include_str!("lcars.css");
+/// Antonio Bold, SIL Open Font License (fonts/OFL.txt).
+const ANTONIO: &[u8] = include_bytes!("fonts/antonio.woff2");
+/// The LCARS theme's version, also on the first line of lcars.css and in its `--lcars-theme-version`.
+const LCARS_VERSION: &str = "0.1";
 
 /// Scripts only from this server, so even a bug in the Markdown renderer cannot run injected script.
 const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; \
-                   connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+                   font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 pub async fn serve(home: Home, open: bool) -> Result<()> {
     let port = home.config.port;
@@ -167,8 +172,11 @@ fn router(home: Home, guard: Arc<Guard>, shutdown: CancellationToken) -> Router 
         .route("/api/sync", get(sync_status).post(sync_now).put(sync_repo))
         .route("/api/settings", patch(update_settings))
         .route_layer(middleware::from_fn_with_state(guard.clone(), forward));
+    lcars_index();
     Router::new()
-        .route("/", get(|| async { Html(INDEX) }))
+        .route("/", get(index))
+        .route("/lcars.css", get(|| async { ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], LCARS_CSS) }))
+        .route("/fonts/antonio.woff2", get(|| async { ([(header::CONTENT_TYPE, "font/woff2")], ANTONIO) }))
         .route("/app.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], APP_JS) }))
         .route("/logo.png", get(|| async { ([(header::CONTENT_TYPE, "image/png")], LOGO) }))
         .route("/api/ping", get(|| async { "kanzo" }))
@@ -178,6 +186,41 @@ fn router(home: Home, guard: Arc<Guard>, shutdown: CancellationToken) -> Router 
         .layer(Extension(guard.clone()))
         .layer(middleware::from_fn_with_state(guard, protect))
         .with_state(Arc::new(home))
+}
+
+#[derive(Deserialize)]
+struct PageQuery {
+    theme: Option<String>,
+}
+
+/// `theme` in config.toml picks the page; `/?theme=lcars` or `/?theme=kanzo` overrides it for one visit.
+async fn index(State(home): Shared, Query(q): Query<PageQuery>) -> Html<&'static str> {
+    let theme =
+        q.theme.as_deref().and_then(Theme::parse).unwrap_or_else(|| home.config.theme().unwrap_or(Theme::Kanzo));
+    Html(match theme {
+        Theme::Kanzo => INDEX,
+        Theme::Lcars => lcars_index(),
+    })
+}
+
+/// The board page with the LCARS stylesheet, its marker on `<html>` and the version footer, built once.
+fn lcars_index() -> &'static str {
+    static PAGE: OnceLock<String> = OnceLock::new();
+    PAGE.get_or_init(|| {
+        let v = update::CURRENT;
+        INDEX
+            .replacen("<html lang=\"en\">", "<html lang=\"en\" data-theme=\"lcars\">", 1)
+            .replacen(
+                "</head>",
+                &format!("<meta name=\"kanzo-version\" content=\"{v}\">\n<link rel=\"stylesheet\" href=\"/lcars.css\">\n</head>"),
+                1,
+            )
+            .replacen(
+                "</aside>",
+                &format!("  <div class=\"lcars-footer\">LCARS THEME v{LCARS_VERSION} · KANZO {v}</div>\n</aside>"),
+                1,
+            )
+    })
 }
 
 /// DNS rebinding needs a domain name the attacker controls, so the board only accepts
@@ -817,6 +860,18 @@ fn open_browser(url: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lcars_page_injects_theme_stylesheet_and_version() {
+        let page = lcars_index();
+        assert!(page.contains("<html lang=\"en\" data-theme=\"lcars\">"));
+        assert!(page.contains("<link rel=\"stylesheet\" href=\"/lcars.css\">\n</head>"));
+        assert!(page.contains(&format!("<meta name=\"kanzo-version\" content=\"{}\">", update::CURRENT)));
+        assert!(page.contains(&format!("LCARS THEME v{LCARS_VERSION} · KANZO {}</div>\n</aside>", update::CURRENT)));
+        assert!(LCARS_CSS.starts_with(&format!("/* LCARS theme v{LCARS_VERSION} */")));
+        assert!(LCARS_CSS.contains(&format!("--lcars-theme-version: \"{LCARS_VERSION}\"")));
+        assert!(!INDEX.contains("lcars"));
+    }
 
     #[test]
     fn hosts() {

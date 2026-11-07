@@ -1,0 +1,305 @@
+/* LCARS theme v0.1 */
+/*
+ * Version: v0.1 · created 2026-11-07 · updated 2026-11-07
+ * Changes: v0.1 first cut: elbow frame, sidebar bars, column header bars with readouts, capped cards, alert pulse.
+ * This file: /home/claude/dev/kanzo/.claude/worktrees/lcars/src/lcars.css (branch lcars-theme)
+ *
+ * A Star Trek TNG computer display for Kanzo, after the LCARS look. Served at /lcars.css only when
+ * config.toml says theme = "lcars" (or the page is opened as /?theme=lcars); the server then marks
+ * <html data-theme="lcars">, and every rule below is scoped under that marker, so the default theme
+ * never sees any of it. Bump the version in three places together: the first line above,
+ * --lcars-theme-version below, and LCARS_VERSION in src/web.rs (a test checks they agree).
+ *
+ * Color roles (token names from thelcars.com):
+ *   structure: Cool Blue frame, Mariner and Midnight for lines, column borders and low-priority columns
+ *   active work: Neon Carrot for the doing column, New task and the selected project
+ *   categories: Lilac and Honey color tags, by data-tag-hue (a stable hash of the tag name, 0-3)
+ *   alerts: Pumpkin and Cardinal, ONLY for a card tagged blocked, urgent, p0, p1 or bug (see "Alert rule")
+ *   focus: Anakiwa rings on every focusable control
+ */
+
+@font-face {
+  font-family: "Antonio LCARS";
+  src: url("/fonts/antonio.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+@keyframes lcars-alert {
+  50% { border-left-color: var(--lcars-pumpkin); box-shadow: -6px 0 14px -6px var(--lcars-pumpkin); }
+}
+
+html[data-theme="lcars"] {
+  --lcars-theme-version: "0.1";
+  --lcars-cool-blue: #6699FF;
+  --lcars-midnight: #0048F0;
+  --lcars-anakiwa: #99CCFF;
+  --lcars-mariner: #3366CC;
+  --lcars-neon-carrot: #FF9900;
+  --lcars-atomic-tangerine: #FF6633;
+  --lcars-lilac: #CC99CC;
+  --lcars-honey: #FFCC99;
+  --lcars-pumpkin: #E63D00;
+  --lcars-cardinal: #DA2537;
+
+  --lcars-frame: var(--lcars-cool-blue);
+  --lcars-panel: color-mix(in srgb, var(--lcars-mariner) 14%, #000);
+  --lcars-panel-hi: color-mix(in srgb, var(--lcars-mariner) 26%, #000);
+  --lcars-label: "Antonio LCARS", "Antonio", "Arial Narrow", sans-serif;
+  --lcars-bar: 24px;   /* height of the frame's top bar */
+  --lcars-side: 216px; /* width of the frame's left column */
+
+  /* Kanzo's own tokens, so every untouched component (menus, popovers, search) turns LCARS dark. */
+  --bg: #000; --sidebar: #000; --col: transparent; --card: var(--lcars-panel); --card-hover: var(--lcars-panel-hi);
+  --panel: #000; --field: var(--lcars-panel); --hover: var(--lcars-panel-hi); --active: #1d2c4f; --menu: #000;
+  --text: #eef2fb; --muted: #a9bbdd; --faint: #7488b3; --border: var(--lcars-mariner); --card-border: transparent;
+  --accent: var(--lcars-neon-carrot); --accent-text: #000; --danger: #ff5c6c; --danger-bg: rgb(218 37 55 / .18);
+  --link: var(--lcars-anakiwa); --code: var(--lcars-panel-hi); --shadow: 0 12px 40px rgb(0 0 0 / .8);
+  color-scheme: dark;
+
+  & body { grid-template-columns: var(--lcars-side) minmax(0, 1fr); background: #000; }
+
+  /* Focus: Kanzo removes outlines; LCARS puts an Anakiwa ring back on every control. */
+  & :focus-visible { outline: 2px solid var(--lcars-anakiwa); outline-offset: 2px; }
+  & input:focus-visible, & textarea:focus-visible { outline-offset: 0; }
+
+  /* Labels, buttons and headers in Antonio; body text stays in the system sans. */
+  .brand, .ghost, .nav a, .btn, .lcars-footer, header h1, header .sub, .repo-link, #network, .column h2, .card .num,
+  .tag, .props, .props select, .section h3, .comment .who, .panel .top, .settings-head h2, .settings-pane h3,
+  #settings-nav button, .dialog-window h2, .menu .label, .results .label, .result .meta, .empty h1 {
+    font-family: var(--lcars-label); text-transform: uppercase; letter-spacing: .06em; font-weight: 700;
+  }
+  .props span, .props input, .props .hint { font-family: ui-sans-serif, system-ui, sans-serif; text-transform: none; letter-spacing: 0; font-weight: 400; }
+
+  /* ---- The frame: elbow (brand) + left column of bars (aside) + top bar (header::before) ---- */
+  & aside { border-right: 0; padding: 0 0 10px; gap: 4px; background: #000; }
+  .brand {
+    position: relative; height: 96px; padding: 0 14px 8px; margin: 0; gap: 8px; align-items: flex-end;
+    justify-content: flex-end; background: var(--lcars-frame); color: #000; border-radius: 64px 0 0 0;
+    font-size: 30px; line-height: 1; letter-spacing: .08em;
+  }
+  .brand img { display: none; }
+  /* The elbow's inside curve, where the left column turns into the top bar. */
+  .brand::after {
+    content: ""; position: absolute; left: 100%; top: var(--lcars-bar); width: 28px; height: 28px; pointer-events: none;
+    background: radial-gradient(circle at 100% 100%, transparent 27.5px, var(--lcars-frame) 28px);
+  }
+  .brand .ghost {
+    order: -1; margin: 0 auto 0 0; padding: 7px; border-radius: 99px; background: #000; color: var(--lcars-frame);
+  }
+  .brand .ghost:hover, .brand .ghost:focus-visible { background: #000; color: var(--lcars-anakiwa); }
+
+  /* Every sidebar control is an LCARS bar: flush left, label bottom right, black ink. */
+  & aside > .ghost, .nav a {
+    min-height: 40px; padding: 4px 12px 5px; border-radius: 0; justify-content: flex-end; align-items: flex-end;
+    gap: 8px; background: var(--lcars-anakiwa); color: #000; font-size: 15px; line-height: 1.1;
+  }
+  & aside > .ghost .icon svg, .nav a .icon svg { width: 15px; height: 15px; }
+  & aside > .ghost:hover, & aside > .ghost:focus-visible, .nav a:hover, .nav a:focus-visible { background: #fff; color: #000; }
+  #new-project-toggle { background: var(--lcars-frame); margin-bottom: 6px; }
+  .update { margin-top: 4px; background: var(--lcars-lilac); }
+  #settings { margin-top: 0; background: var(--lcars-frame); color: #000; border-radius: 0 0 0 40px; min-height: 52px; }
+  #settings:hover, #settings.open { color: #000; }
+  .lcars-footer { padding: 6px 12px 0; color: var(--lcars-cool-blue); font-size: 11.5px; letter-spacing: .14em; text-align: right; text-transform: none; }
+
+  .nav { gap: 4px; }
+  .nav a .name { flex: 1; text-align: right; }
+  /* Numeric readout at the left of each bar, project color as an indicator light. */
+  .nav a .count { order: -1; color: #000; font-size: 15px; min-width: 2ch; }
+  .nav a .icon { order: -2; align-self: center; }
+  .nav .item .icon { width: 9px; height: 20px; border-radius: 2px; background: currentColor; box-shadow: 0 0 0 1.5px #000; }
+  .nav .item .icon svg { display: none; }
+  .nav a.active { background: var(--lcars-neon-carrot); }
+  .nav .item.menu-open a { background: #fff; }
+  .nav .label { padding: 10px 12px 2px; color: var(--lcars-cool-blue); text-align: right; font-family: var(--lcars-label); letter-spacing: .14em; text-transform: uppercase; font-size: 12px; }
+  .nav .more { left: 28px; right: auto; color: #000; }
+  .nav .more:hover { background: rgb(0 0 0 / .12); color: #000; }
+  /* The rest of the column: a Mariner bar down to Settings. */
+  .nav::after { content: ""; flex: 1 0 24px; background: var(--lcars-mariner); }
+
+  /* ---- Header: the top bar with an end cap, then the project title and tools ---- */
+  & header { position: relative; padding: calc(var(--lcars-bar) + 16px) 24px 14px 36px; gap: 10px; }
+  & header::before, & header::after { content: ""; position: absolute; top: 0; height: var(--lcars-bar); }
+  & header::before { left: 0; right: 118px; background: var(--lcars-frame); }
+  & header::after { right: 0; width: 112px; background: var(--lcars-honey); border-radius: 0 12px 12px 0; }
+  & header h1 { font-size: 30px; line-height: 1; letter-spacing: .05em; color: var(--lcars-neon-carrot); }
+  & header .sub { color: var(--lcars-cool-blue); font-size: 15px; }
+  & header .repo-link { border-radius: 99px; background: none; box-shadow: inset 0 0 0 2px var(--lcars-mariner); color: var(--lcars-anakiwa); font-size: 12px; }
+  #filter { border: 2px solid var(--lcars-mariner); background: #000; }
+  #filter:focus, #filter.on { border-color: var(--lcars-anakiwa); }
+  #network, #human-only { box-shadow: inset 0 0 0 2px var(--lcars-mariner); color: var(--lcars-cool-blue); font-size: 14px; }
+  #network:hover, #human-only:hover, #network.open { background: var(--lcars-panel-hi); color: var(--lcars-anakiwa); }
+  #network.on, #human-only[aria-pressed="true"], #human-only[aria-pressed="true"]:hover {
+    background: var(--lcars-cool-blue); color: #000; box-shadow: none;
+  }
+
+  .btn { border-radius: 99px; background: var(--lcars-cool-blue); color: #000; font-size: 15px; padding: 7px 18px 6px; }
+  .btn:hover, .btn:focus-visible { background: var(--lcars-anakiwa); }
+  .btn.primary { background: var(--lcars-neon-carrot); color: #000; }
+  .btn.primary:hover, .btn.primary:focus-visible { opacity: 1; background: var(--lcars-honey); }
+  .btn.danger { background: var(--lcars-cardinal); color: #000; }
+  #new-task { min-height: 35px; }
+
+  /* ---- Columns: each one a small elbow, header bar plus left rail, with a count readout ---- */
+  .columns { gap: 14px; padding: 4px 24px 24px 36px; }
+  .column {
+    --c: var(--lcars-cool-blue); --ink: #000; --readout: var(--c);
+    position: relative; border-left: 6px solid var(--c); border-radius: 20px 0 0 20px; background: none;
+  }
+  .column[data-status="backlog"] { --c: var(--lcars-mariner); --ink: #fff; --readout: var(--lcars-cool-blue); }
+  .column[data-status="todo"] { --c: var(--lcars-cool-blue); }
+  .column[data-status="doing"] { --c: var(--lcars-neon-carrot); }
+  .column[data-status="review"] { --c: var(--lcars-lilac); }
+  .column[data-status="done"] { --c: var(--lcars-midnight); --ink: #fff; --readout: var(--lcars-anakiwa); }
+  .column h2 {
+    position: relative; margin-left: -6px; padding: 0 0 0 16px; height: 34px; gap: 8px; border-radius: 20px 0 0 0;
+    background: var(--c); color: var(--ink); font-size: 17px; line-height: 1;
+  }
+  .column h2::after {
+    content: ""; position: absolute; left: 6px; top: 100%; width: 14px; height: 14px; pointer-events: none;
+    background: radial-gradient(circle at 100% 100%, transparent 13.5px, var(--c) 14px);
+  }
+  .column h2 .status-icon { display: none; }
+  .column h2 .count {
+    margin-left: auto; align-self: stretch; display: flex; align-items: center; justify-content: flex-end;
+    min-width: 3.2ch; padding: 0 8px; border: 4px solid var(--c); border-width: 4px 4px 4px 0; background: #000;
+    color: var(--readout); font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums;
+  }
+  .column h2 .count:empty::before { content: "0"; }
+  .column h2 .collapse { order: 3; margin: 0 4px 0 -4px; color: var(--ink); }
+  .column h2 .collapse:hover, .column h2 .collapse:focus-visible { background: rgb(0 0 0 / .18); color: var(--ink); }
+  .column.collapsed { border-radius: 20px 0 0 20px; }
+  .column.collapsed:hover { background: var(--lcars-panel); }
+  .column.collapsed h2 { height: auto; padding: 12px 0; margin-left: -6px; border-radius: 20px 0 0 20px; }
+  .column.collapsed h2::after { display: none; }
+  .column.collapsed h2 .count { margin: 0; padding: 6px 0; border-width: 4px 0; min-width: 0; width: 100%; justify-content: center; }
+  .column.collapsed h2 .collapse { margin: 0 0 4px; }
+  .cards { padding: 10px 2px 8px 10px; gap: 8px; }
+
+  /* ---- Cards: dark panels with a colored left cap, Antonio readout for the number ---- */
+  .card {
+    --cap: var(--c);
+    border: 0; border-left: 8px solid var(--cap); border-radius: 14px 3px 3px 14px; padding: 9px 12px 10px;
+    background: var(--lcars-panel);
+  }
+  .card:hover { background: var(--lcars-panel-hi); }
+  .card.open { background: var(--lcars-panel-hi); box-shadow: inset 0 0 0 1px var(--lcars-anakiwa); }
+  .card .title { font-weight: 550; }
+  .card .num { color: var(--lcars-cool-blue); font-size: 13px; letter-spacing: .08em; margin-top: 1px; }
+  .card .num:hover { color: var(--lcars-anakiwa); }
+  .card .human-mark { color: var(--lcars-honey); }
+  .column[data-status="done"] .card { opacity: .72; }
+  .column[data-status="done"] .card:hover, .column[data-status="done"] .card.open { opacity: 1; }
+  .card.dragging, .column[data-status="done"] .card.dragging { opacity: .35; }
+  .drop-line { height: 3px; background: var(--lcars-anakiwa); }
+  .cards > .ghost.more { justify-content: center; border-radius: 99px; color: var(--lcars-cool-blue); box-shadow: inset 0 0 0 2px var(--lcars-mariner); font-size: 13px; }
+
+  /* Tags: Lilac and Honey, solid or outlined, picked by the stable data-tag-hue. */
+  .tag { padding: 1px 9px 0; border-radius: 99px; background: var(--lcars-lilac); color: #000; font-size: 11.5px; letter-spacing: .08em; line-height: 1.5; }
+  .tag[data-tag-hue="1"] { background: var(--lcars-honey); }
+  .tag[data-tag-hue="2"] { background: none; color: var(--lcars-lilac); box-shadow: inset 0 0 0 1.5px var(--lcars-lilac); }
+  .tag[data-tag-hue="3"] { background: none; color: var(--lcars-honey); box-shadow: inset 0 0 0 1.5px var(--lcars-honey); }
+  .tag.url { background: none; color: var(--lcars-anakiwa); box-shadow: inset 0 0 0 1.5px var(--lcars-mariner); text-transform: lowercase; }
+  .tag.url:hover { background: var(--lcars-panel-hi); }
+
+  /*
+   * Alert rule: a card is an alert when one of its tags is exactly blocked, urgent, p0, p1 or bug
+   * (tags are stored lowercase). Its cap turns Cardinal and pulses toward Pumpkin; the matching tag
+   * chip turns Pumpkin. Nothing else on the board uses the alert colors.
+   */
+  .card:is([data-tags="blocked"], [data-tags^="blocked,"], [data-tags$=",blocked"], [data-tags*=",blocked,"],
+    [data-tags="urgent"], [data-tags^="urgent,"], [data-tags$=",urgent"], [data-tags*=",urgent,"],
+    [data-tags="p0"], [data-tags^="p0,"], [data-tags$=",p0"], [data-tags*=",p0,"],
+    [data-tags="p1"], [data-tags^="p1,"], [data-tags$=",p1"], [data-tags*=",p1,"],
+    [data-tags="bug"], [data-tags^="bug,"], [data-tags$=",bug"], [data-tags*=",bug,"]) {
+    --cap: var(--lcars-cardinal);
+    animation: lcars-alert 2.4s ease-in-out infinite;
+  }
+  .tag:is([data-tag="blocked"], [data-tag="urgent"], [data-tag="p0"], [data-tag="p1"], [data-tag="bug"]) {
+    background: var(--lcars-pumpkin); color: #000; box-shadow: none;
+  }
+  @media (prefers-reduced-motion: reduce) { .card { animation: none !important; } }
+
+  /* ---- Task panel: its own elbow, Cool Blue bar across the top and down the left ---- */
+  .panel {
+    width: min(520px, 100vw); border-left: 12px solid var(--lcars-frame); border-radius: 40px 0 0 0;
+    box-shadow: -24px 0 48px rgb(0 0 0 / .85);
+  }
+  .panel .top { position: relative; min-height: 46px; padding: 6px 10px 6px 18px; background: var(--lcars-frame); color: #000; }
+  .panel .top::after {
+    content: ""; position: absolute; left: 0; top: 100%; width: 22px; height: 22px; pointer-events: none;
+    background: radial-gradient(circle at 100% 100%, transparent 21.5px, var(--lcars-frame) 22px);
+  }
+  .panel .top .key { color: #000; font-size: 20px; font-family: var(--lcars-label); letter-spacing: .06em; }
+  .panel .top .ghost, .panel .top .ghost:hover { color: #000; }
+  .panel .top .ghost:hover { background: rgb(0 0 0 / .15); }
+  .panel .top .ghost.danger:hover { color: #000; background: var(--lcars-cardinal); }
+  .panel .project-pick { background: #000; color: var(--lcars-cool-blue); }
+  .panel .project-pick:hover, .panel .project-pick:focus-within { background: #000; color: var(--lcars-anakiwa); }
+  .panel .project-pick select { text-transform: uppercase; }
+  .panel .body { padding: 18px 22px 24px 30px; }
+  .panel .title-input { font-size: 21px; }
+  .props { color: var(--lcars-cool-blue); font-size: 14px; }
+  .props select { border-radius: 99px; background-color: #000; box-shadow: inset 0 0 0 2px var(--lcars-mariner); color: var(--lcars-anakiwa); }
+  .section h3 { color: var(--lcars-anakiwa); font-size: 15px; }
+  .section h3::after { content: ""; flex: 1; height: 2px; background: var(--lcars-mariner); }
+  .section h3 .count { color: var(--lcars-cool-blue); font-weight: 700; }
+  .comment .who { color: var(--lcars-cool-blue); font-size: 12px; }
+  .comment .who b { color: var(--lcars-honey); font-weight: 700; }
+  .composer { background: #000; box-shadow: inset 0 0 0 2px var(--lcars-mariner); }
+  .composer:focus-within { box-shadow: inset 0 0 0 2px var(--lcars-anakiwa); }
+  .composer .send { background: var(--lcars-neon-carrot); color: #000; }
+
+  /* ---- Dialogs, menus, popovers: black with a Mariner rule and a Cool Blue title bar ---- */
+  .search-dialog { background: rgb(0 0 0 / .72); }
+  .search-window, .settings-window, .dialog-window, .menu, .popover {
+    background: #000; border: 2px solid var(--lcars-mariner); box-shadow: var(--shadow);
+  }
+  .search-window { border-top: 12px solid var(--lcars-frame); border-radius: 26px 6px 6px 6px; }
+  .dialog-window { border-left: 12px solid var(--lcars-frame); border-radius: 26px 6px 6px 26px; }
+  .dialog-window h2 { color: var(--lcars-neon-carrot); font-size: 22px; }
+  .settings-window { border-radius: 26px 6px 6px 6px; }
+  .settings-head { background: var(--lcars-frame); border-bottom: 0; }
+  .settings-head h2 { color: #000; font-size: 20px; }
+  .settings-head .ghost, .settings-head .ghost:hover { color: #000; }
+  #settings-nav { background: #000; border-right: 2px solid var(--lcars-mariner); gap: 4px; }
+  #settings-nav button { color: var(--lcars-cool-blue); border-radius: 99px 0 0 99px; justify-content: flex-end; }
+  #settings-nav button.active { background: var(--lcars-neon-carrot); color: #000; }
+  .settings-pane h3 { color: var(--lcars-anakiwa); }
+  .setting { border-top-color: var(--lcars-panel-hi); }
+  .switch span { background: var(--lcars-panel-hi); box-shadow: inset 0 0 0 1.5px var(--lcars-mariner); }
+  .switch input:checked + span { background: var(--lcars-cool-blue); box-shadow: none; }
+  .result.selected { background: var(--lcars-panel-hi); box-shadow: inset 4px 0 0 var(--lcars-cool-blue); }
+  .menu .label, .results .label { color: var(--lcars-cool-blue); letter-spacing: .12em; }
+  .toast { background: var(--lcars-honey); color: #000; }
+  .offline { background: var(--lcars-cardinal); color: #000; font-weight: 600; }
+  .empty h1 { color: var(--lcars-neon-carrot); font-size: 28px; }
+
+  /* ---- Phones and narrow windows: the frame folds into a top bar ---- */
+  @media (max-width: 900px) {
+    & body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+    & aside { flex-flow: row wrap; align-items: center; padding: 8px 12px 6px; gap: 6px; }
+    .brand { flex: 1 0 100%; height: 40px; padding: 0 14px 0 5px; align-items: center; border-radius: 20px 0 0 20px; font-size: 22px; }
+    .brand::after { display: none; }
+    .nav { order: 2; flex: 1 0 100%; flex-direction: row; overflow-x: auto; gap: 4px; }
+    .nav::after, .nav .label { display: none; }
+    .nav a { width: auto; min-height: 34px; align-items: center; border-radius: 99px; padding: 4px 14px; }
+    .nav .item { flex: none; }
+    .nav .more { left: auto; right: 4px; }
+    #new-project-toggle { display: flex; }
+    & aside > .ghost { width: auto; min-height: 32px; margin: 0; align-items: center; border-radius: 99px; padding: 4px 14px; font-size: 13px; }
+    #settings { min-height: 32px; border-radius: 99px; }
+    .lcars-footer { margin-left: auto; padding: 0; font-size: 10.5px; letter-spacing: .1em; }
+    & header { padding: 12px 12px 10px; }
+    & header::before, & header::after { display: none; }
+    & header h1 { font-size: 24px; }
+    #filters { order: 1; }
+    #filter-box { order: 1; flex: 1 0 100%; }
+    #filter { width: 100%; }
+    .columns { padding: 2px 12px 12px; grid-auto-columns: minmax(78vw, 1fr); }
+    .panel { border-left-width: 6px; border-radius: 22px 0 0 0; }
+    .panel .body { padding: 14px 16px 24px 18px; }
+    .settings-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+    #settings-nav { flex-direction: row; border-right: 0; border-bottom: 2px solid var(--lcars-mariner); }
+  }
+}
