@@ -202,6 +202,24 @@ impl Store {
         })
     }
 
+    /// The look picked on the board, for every browser that opens it; `None` until one is picked.
+    pub fn theme(&self) -> Result<Option<String>> {
+        Ok(self.conn.query_row("SELECT value FROM meta WHERE key = 'theme'", [], |r| r.get(0)).optional()?)
+    }
+
+    /// Keeps the look picked on the board. The caller checks the name is a theme.
+    pub fn set_theme(&self, theme: &str) -> Result<()> {
+        self.write(|c| {
+            c.execute(
+                "INSERT INTO meta (key, value) VALUES ('theme', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [theme],
+            )?;
+            // Other open boards switch too.
+            c.execute("UPDATE meta SET value = value + 1 WHERE key = 'changes'", [])?;
+            Ok(())
+        })
+    }
+
     /// The properties turned off in Settings: off the board, and out of what agents get.
     pub fn hidden_properties(&self) -> Result<Vec<String>> {
         let hidden: Option<String> = self
@@ -1632,6 +1650,18 @@ mod tests {
         assert!(s.set_backlog(false).is_err());
         s.delete_task(backlog.id).unwrap();
         s.set_backlog(false).unwrap();
+    }
+
+    #[test]
+    fn theme_is_kept_for_every_browser() {
+        let (_tmp, s) = store();
+        assert_eq!(s.theme().unwrap(), None);
+        let before = s.changes().unwrap();
+        s.set_theme("skeletal").unwrap();
+        assert_eq!(s.theme().unwrap().as_deref(), Some("skeletal"));
+        assert!(s.changes().unwrap() > before, "open boards poll the change counter to follow the switch");
+        s.set_theme("kanzo").unwrap();
+        assert_eq!(s.theme().unwrap().as_deref(), Some("kanzo"));
     }
 
     #[test]

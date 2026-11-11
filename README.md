@@ -79,6 +79,10 @@ Then ask: *"take the next task from kanzo and do it."* The agent moves the card 
   <img alt="A task open on the board, with Claude Code's comments and a reply" src="docs/img/task-light.jpg">
 </picture>
 
+## Pick a look
+
+Three themes, switched at the bottom of the sidebar or in Settings: Kanzo's own look, **LCARS**, and **Skeletal LCARS**, the dark hairline terminal from Google Stitch. The pick is kept on the board, so every browser that opens it gets the same look; `/?theme=lcars` previews one for a visit. See [docs/themes](docs/themes/README.md).
+
 ## Park ideas in a backlog
 
 Turn on Backlog in Settings for a column agents leave alone, until you move its tasks to `todo`.

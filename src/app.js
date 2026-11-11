@@ -291,6 +291,7 @@ async function loadBoard() {
     if (request !== boardRequest) return;
     state.board = board;
     document.documentElement.dataset.hide = (board.hidden_properties || []).join(" ");
+    if (board.theme) followTheme(board.theme);
     state.changes = board.changes;
     $("#offline").hidden = true;
     render();
@@ -343,7 +344,7 @@ function renderNav() {
       el("span", { class: "count" }, String(count)));
   const item = (p) => renaming && renaming.slug === p.slug
     ? el("div", { class: "item renaming" }, icon("folder", projectColor(p.slug)), renaming.input)
-    : el("div", { class: "item" + (state.menu === p.slug ? " menu-open" : "") },
+    : el("div", { class: "item" + (state.menu === p.slug ? " menu-open" : ""), "data-agent": "project", "data-project-id": p.slug },
     link(p.slug, p.name, p.open, icon("folder", projectColor(p.slug))),
     el("button", { class: "more", title: "More", "aria-label": `More for ${p.name}`, "aria-haspopup": "menu",
                    onclick: (e) => toggleProjectMenu(p, e.currentTarget) }, icon("more")));
@@ -531,10 +532,10 @@ function renderColumns() {
     state.layout = layout;
     columns.replaceChildren(...statuses.map((status) => {
       const collapsible = status === "backlog" || status === "done";
-      const col = el("section", { class: "column", "data-status": status },
+      const col = el("section", { class: "column", "data-status": status, "data-agent": "kanban-column", "data-column-id": status },
         el("h2", {},
-          statusIcon(status), status,
-          el("span", { class: "count" }),
+          statusIcon(status), el("span", { class: "status-name" }, status),
+          el("span", { class: "count", "data-agent": "column-count" }),
           collapsible ? el("button", { class: "collapse", onclick: (e) => { e.stopPropagation(); setCollapsed(status, !isCollapsed(status)); } }) : null),
         el("div", { class: "cards" }),
       );
@@ -656,7 +657,7 @@ function highlight(name, root, words) {
 }
 
 function summary(t, link = null) {
-  const chips = [...(link ? [link] : []), ...(isPropertyHidden("tags") ? [] : t.tags.map((tag) => el("span", { class: "tag" }, tag)))];
+  const chips = [...(link ? [link] : []), ...(isPropertyHidden("tags") ? [] : t.tags.map((tag) => el("span", { class: "tag", "data-tag": tag }, tag)))];
   return [
     t.description ? el("span", { class: "desc" }, plainText(t.description)) : null,
     chips.length ? el("span", { class: "tags" }, chips) : null,
@@ -724,13 +725,24 @@ function plainText(md) {
     .trim();
 }
 
+// Tags that call for attention, so a theme can colour the card: blocked work first.
+function alertLevel(t) {
+  if (t.tags.some((tag) => ["blocked", "urgent", "p0"].includes(tag))) return "red";
+  if (t.tags.some((tag) => ["p1", "bug"].includes(tag))) return "amber";
+  return null;
+}
+
 function card(t, showProject) {
   const node = el("div", { class: "card" + (state.task === t.id ? " open" : ""), draggable: "true", "data-id": t.id,
+                           "data-agent": "task-card", "data-task-id": t.id, "data-status": t.status, "data-project": t.project,
+                           "data-tags": t.tags.join(" "), "data-human": t.human ? "true" : null, "data-alert": alertLevel(t),
+                           "data-updated": t.updated_at.slice(0, 10), "data-comments": t.comments || null,
                            onclick: () => openTask(t.id) },
     el("div", { class: "head" },
       el("div", { class: "title" }, t.title),
       t.human ? el("span", { class: "human-mark", title: "Human task: agents skip it" }, icon("human")) : null,
-      el("span", { class: "num", title: `Copy ${key(t)}`, onclick: (e) => { e.stopPropagation(); copyKey(key(t)); } },
+      el("span", { class: "num", title: `Copy ${key(t)}`, "data-updated": t.updated_at.slice(0, 10),
+                   onclick: (e) => { e.stopPropagation(); copyKey(key(t)); } },
         showProject ? el("span", { class: "dot", style: `background:${projectColor(t.project)}` }) : null, `#${t.id}`)),
     ...summary(t, urlChip(t)));
   node.addEventListener("dragstart", (e) => {
@@ -1441,6 +1453,49 @@ $("#network-join").addEventListener("submit", async (e) => {
   submit.disabled = false;
   submit.textContent = "Join";
 });
+
+// Themes. The pick is a board setting, so every browser shows the same look; the page
+// comes with it on <html data-theme>, and /?theme= previews one (theme.js) until a pick.
+const THEMES = [["kanzo", "Kanzo"], ["lcars", "LCARS"], ["skeletal", "Skeletal"]];
+
+function currentTheme() {
+  return document.documentElement.dataset.theme || "kanzo";
+}
+
+function showTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  const version = getComputedStyle(document.documentElement).getPropertyValue("--theme-version").trim().replace(/^"|"$/g, "");
+  const name = THEMES.find(([id]) => id === theme)?.[1] || theme;
+  const preview = "themePreview" in document.documentElement.dataset ? " · preview" : "";
+  const kanzo = state.board?.version ? ` · Kanzo ${state.board.version}` : "";
+  $("#theme-version").textContent = (version ? `${name} v${version}` : name) + kanzo + preview;
+  $("#theme-tabs").querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.themePick === theme)));
+  $("#settings-theme").value = theme;
+}
+
+// The board's saved theme, applied unless this visit is previewing another with /?theme=.
+function followTheme(theme) {
+  if ("themePreview" in document.documentElement.dataset) { showTheme(currentTheme()); return; }
+  if (!THEMES.some(([id]) => id === theme)) return;
+  showTheme(theme);
+}
+
+async function setTheme(theme) {
+  delete document.documentElement.dataset.themePreview;
+  if (location.search) history.replaceState(null, "", location.pathname + location.hash);
+  const before = currentTheme();
+  showTheme(theme);
+  try {
+    await api("PATCH", "/settings", { theme });
+  } catch (err) { showTheme(before); toast(err.message); }
+}
+
+$("#theme-tabs").replaceChildren(...THEMES.map(([id, name]) =>
+  el("button", { class: "theme-tab", type: "button", "data-theme-pick": id, "aria-pressed": "false", title: `${name} theme`,
+                 onclick: () => setTheme(id) }, name)));
+$("#settings-theme").replaceChildren(...THEMES.map(([id, name]) => el("option", { value: id }, name)));
+$("#settings-theme").addEventListener("change", (e) => setTheme(e.target.value));
+showTheme(currentTheme());
 
 function toggleSettingsMenu() {
   if (!state.board || !toggleMenu("settings")) return;
