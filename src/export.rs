@@ -1,5 +1,3 @@
-//! `kanzo export`: the whole board as Markdown or JSON, readable without Kanzo.
-
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -7,8 +5,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 
 use crate::home::Home;
-use crate::store::short_time;
-use crate::store::{Comment, Project, Store, Task};
+use crate::store::{self, Comment, Project, Store, Task, short_time};
 
 #[derive(Clone, Copy, clap::ValueEnum)]
 pub enum Format {
@@ -37,9 +34,8 @@ struct TaskOut {
     title: String,
     description: String,
     tags: Vec<String>,
-    /// Work for a person, which agents leave alone.
+    url: String,
     human: bool,
-    /// Paths of the images attached to the task and its comments.
     images: Vec<String>,
     status: String,
     created_at: String,
@@ -55,6 +51,7 @@ impl TaskOut {
             title: task.title,
             description: task.description,
             tags: task.tags,
+            url: task.url,
             human: task.human,
             images,
             status: task.status,
@@ -67,7 +64,7 @@ impl TaskOut {
 
 pub fn export(home: &Home, format: Format, project: Option<&str>, output: Option<&Path>) -> Result<()> {
     let store = home.store()?;
-    let board = collect(&store, project, &home.dir.join("images"))?;
+    let board = collect(&store, project, &home.images())?;
     let text = match format {
         Format::Json => serde_json::to_string_pretty(&board)? + "\n",
         Format::Markdown => markdown(&board),
@@ -113,9 +110,9 @@ fn markdown(board: &Board) -> String {
             p.project.slug,
             p.project.open,
             p.project.total,
-            if p.project.total == 1 { "task" } else { "tasks" }
+            store::tasks(p.project.total)
         );
-        // Columns in board order, then any status no longer in the config.
+        // Tasks can keep a status that is no longer in the config.
         let mut statuses = board.statuses.clone();
         for t in &p.tasks {
             if !statuses.contains(&t.status) {
@@ -142,6 +139,9 @@ fn markdown(board: &Board) -> String {
                 }
                 if !t.tags.is_empty() {
                     let _ = writeln!(md, "Tags: {}.", t.tags.join(", "));
+                }
+                if !t.url.is_empty() {
+                    let _ = writeln!(md, "URL: <{}>", t.url);
                 }
                 if !t.images.is_empty() {
                     let _ = writeln!(md, "Images: {}.", t.images.join(", "));

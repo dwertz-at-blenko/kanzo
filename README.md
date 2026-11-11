@@ -58,7 +58,7 @@ kanzo
 
 The board opens at http://localhost:4242. That's all the setup there is: the first run creates `~/kanzo`, and the whole board lives in it.
 
-`n` adds a task, `/` or `⌘K` searches every project, `Tab` moves to the description, `⌘↵` saves and closes, `Esc` cancels. Mark a task Human and agents leave it to you; the person icon shows only those. Paste or drop an image into a task or a comment to attach it. When a new version is out, the sidebar offers it: one click installs it.
+`n` adds a task, `/` or `⌘K` searches every project, `f` filters the board and `↵` keeps the filter, `Tab` moves to the description, `⌘↵` saves and closes, `Esc` cancels. Mark a task Human and agents leave it to you; the person icon shows only those. Paste or drop an image into a task or a comment to attach it. Give a task a URL, like its pull request on any site, and click the link on its card to open it; agents set it with `url`. When a new version is out, the sidebar offers it: one click installs it.
 
 ## Connect your agents
 
@@ -79,6 +79,10 @@ Then ask: *"take the next task from kanzo and do it."* The agent moves the card 
   <img alt="A task open on the board, with Claude Code's comments and a reply" src="docs/img/task-light.jpg">
 </picture>
 
+## Pick a look
+
+Three themes, switched at the bottom of the sidebar or in Settings: Kanzo's own look, **LCARS**, and **Skeletal LCARS**, the dark hairline terminal from Google Stitch. The pick is kept on the board, so every browser that opens it gets the same look; `/?theme=lcars` previews one for a visit. See [docs/themes](docs/themes/README.md).
+
 ## Park ideas in a backlog
 
 Turn on Backlog in Settings for a column agents leave alone, until you move its tasks to `todo`.
@@ -87,6 +91,31 @@ Turn on Backlog in Settings for a column agents leave alone, until you move its 
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/backlog-dark.jpg">
   <img alt="The board with the Backlog column on, left of Todo" src="docs/img/backlog-light.jpg">
 </picture>
+
+## Filter and search
+
+> [!TIP]
+> **Just ask your agent:** *"take the next kanzo task tagged billing,"* or *"list what's left in kanzo with tag:billing."*
+
+The board's filter (`f`), search (`/`) and the `filter` of `list_tasks` and `next_task` all understand the same words, like on GitHub. Every part must match, and `-` before a qualifier negates it: `tag:billing -status:done`. Qualifiers turn blue as you type them, so you can see what will filter.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/filter-dark.jpg">
+  <img alt="The board filtered by a saved tag:backend chip and -status:todo in the filter box, with the two matching tasks and their tag highlighted" src="docs/img/filter-light.jpg">
+</picture>
+
+| Qualifier | Finds | Example |
+| --- | --- | --- |
+| `tag:` | that exact tag | `tag:bug`, `tag:"needs review"` |
+| `status:` | a column | `status:doing` |
+| `project:` | a project | `project:api` |
+| `title:`, `description:`, `url:`, `comment:` | text in that field | `title:login`, `comment:"on hold"` |
+| `id:`, `comments:`, `images:` | a number, or a range | `id:12`, `comments:>2`, `images:1..3` |
+| `created:`, `updated:` | a date, or a range | `created:2026-11-05`, `updated:<2026-01-31` |
+| `is:human` | tasks for you, not agents | `-is:human` |
+| `has:`, `no:` | `description`, `tags`, `url`, `comments` or `images` | `has:url`, `no:tags` |
+
+Anything else is plain text. Use quotes for a phrase, `"on hold"`, or to look for text that reads like a qualifier, `"tag:bug"`. Agents can't filter through a property you've hidden in Settings.
 
 ## Use it on several computers
 
@@ -188,6 +217,8 @@ listen = "127.0.0.1"   # sharing opens the board to your network; "0.0.0.0" keep
 mcp_http = true        # MCP at /mcp
 ```
 
+Settings on the board lists each task's properties, like tags or comments. Turn one off to hide it there and leave it out of what agents get; nothing is deleted.
+
 ## Small and fast
 
 | | |
@@ -196,7 +227,7 @@ mcp_http = true        # MCP at /mcp
 | Memory | 4.5 MB idle, 8 MB with 3,000 tasks |
 | Start | 2 ms |
 | Board of 3,000 tasks | 17 ms to load in the browser |
-| Agents' tool list | about 900 tokens, once per session |
+| Agents' tool list | about 1,000 tokens, once per session |
 | Agents' replies | 10 to 60 tokens of plain text |
 
 Measured on an Apple M4.

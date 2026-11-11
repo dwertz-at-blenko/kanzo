@@ -1,0 +1,13 @@
+/* LCARS theme v0.0-stub */
+/*
+ * STUB. The LCARS theme (v0.2, Antonio Bold, the classic palette, the pulsing
+ * alert tags) lives in the VPS fork's branch `public-url` as src/lcars.css,
+ * which was never pushed to GitHub. Merging that branch replaces this file:
+ * take theirs, then set LCARS_VERSION in src/web.rs to its version and keep
+ * the two lines below in step (a test checks them).
+ *
+ * Until then "LCARS" in the switcher shows the stock look.
+ */
+html[data-theme="lcars"] {
+  --theme-version: "0.0-stub";
+}

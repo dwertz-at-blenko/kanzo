@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Kanzo</title>
 <link rel="icon" href="/logo.png">
+<link rel="stylesheet" href="/lcars.css">
+<link rel="stylesheet" href="/skeletal.css">
+<script src="/theme.js"></script>
 <style>
 :root {
   --bg: #ffffff; --sidebar: #f9f9f9; --col: #f7f7f7; --card: #ffffff; --card-hover: #f4f4f4; --panel: #ffffff;
@@ -40,7 +43,6 @@ button { cursor: pointer; }
 .icon svg { width: 18px; height: 18px; display: block; }
 .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
 
-/* Sidebar */
 aside {
   background: var(--sidebar); border-right: 1px solid var(--border);
   display: flex; flex-direction: column; min-height: 0; padding: 12px 8px;
@@ -62,7 +64,6 @@ aside {
 .nav a .name { overflow: hidden; text-overflow: ellipsis; flex: 1; }
 .nav a .count { color: var(--faint); font-size: 12px; font-variant-numeric: tabular-nums; }
 .nav .label { color: var(--faint); padding: 18px 10px 6px; }
-/* A project row: its "more" button takes the count's place on hover, like most sidebars. */
 .nav .item { position: relative; }
 .nav .more {
   position: absolute; right: 6px; top: 50%; transform: translateY(-50%); display: none;
@@ -109,7 +110,6 @@ aside {
 #settings:hover, #settings:focus-visible, #settings.open { color: var(--text); }
 .menu .value { margin-left: auto; padding-left: 12px; color: var(--faint); font-size: 12px; }
 
-/* Controls */
 input.field, textarea.field, select.field {
   background: var(--field); border: 0; border-radius: 12px; padding: 8px 12px; width: 100%;
 }
@@ -127,7 +127,6 @@ select.field:hover { background-color: var(--hover); }
 .btn.primary { background: var(--accent); color: var(--accent-text); }
 .btn.primary:hover, .btn.primary:focus-visible { opacity: .85; }
 
-/* Main board */
 main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 header {
   display: flex; align-items: center; gap: 12px; padding: 16px 24px 14px; flex-wrap: wrap; min-height: 64px;
@@ -141,9 +140,6 @@ header .repo-link {
 }
 header .repo-link:hover, header .repo-link:focus-visible { background: var(--active); color: var(--text); }
 header .repo-link .icon svg { width: 14px; height: 14px; }
-/* Sharing: a green dot with the number of guests, or the computer whose board this is. */
-/* Share: an icon, green with the number of guests while shared, or with the host once joined. */
-/* The header's icon buttons, as tall and round as New task beside them. */
 #network, #human-only { width: auto; height: 35px; min-width: 35px; padding: 0 8px; justify-content: center; border-radius: 99px; }
 #network { gap: 6px; color: var(--muted); font-size: 13px; }
 #network:hover, #network:focus-visible, #network.open { color: var(--text); }
@@ -154,7 +150,38 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
 }
 #new-task { display: inline-flex; align-items: center; gap: 6px; padding-left: 12px; }
 #new-task .icon svg { width: 16px; height: 16px; }
-/* Show only human tasks: a small icon, coloured while the filter is on. */
+.query { position: relative; display: block; }
+.query[hidden] { display: none; }
+.query input { position: relative; display: block; color: transparent; caret-color: var(--text); }
+.query input::placeholder { color: var(--faint); }
+.query input::selection { color: transparent; background: color-mix(in srgb, var(--link) 30%, transparent); }
+.query-mirror {
+  position: absolute; top: 0; right: 0; bottom: 0; left: 0; display: flex; align-items: center; overflow: hidden;
+  color: var(--text); line-height: normal; pointer-events: none;
+}
+.query-mirror > span, .chip > span:first-child { white-space: pre; }
+/* Room to scroll as far as the input does, with its clear button. */
+.query-mirror > span { padding-right: 40px; }
+/* Color only, no weight or padding: the text has to stay exactly under the input's caret. */
+.qualifier-key { color: var(--link); }
+.chip .qualifier-key { font-weight: 600; }
+/* Stops where the input's text does, before its clear button. */
+#filter-box .query-mirror { padding: 0 15px; font-size: 13px; clip-path: inset(0 28px 0 0); }
+#filter {
+  width: 180px; height: 35px; padding: 0 14px; border: 1px solid var(--border); border-radius: 99px;
+  background: transparent; font: inherit; font-size: 13px; outline: none;
+}
+#filter:focus { border-color: var(--link); }
+#filter.on { border-color: var(--link); background: color-mix(in srgb, var(--link) 8%, transparent); }
+#filters { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip {
+  display: inline-flex; align-items: center; gap: 2px; height: 28px; padding: 0 4px 0 12px; border-radius: 99px;
+  background: color-mix(in srgb, var(--link) 15%, transparent); color: var(--link); font-size: 13px;
+}
+.chip button { display: inline-flex; padding: 4px; border: 0; border-radius: 99px; background: none; color: inherit; }
+.chip button:hover { background: color-mix(in srgb, var(--link) 20%, transparent); }
+.chip .icon svg { width: 13px; height: 13px; }
+::highlight(filter), ::highlight(search) { background-color: color-mix(in srgb, var(--link) 25%, transparent); }
 #human-only { color: var(--muted); }
 #human-only:hover, #human-only:focus-visible { color: var(--text); }
 #human-only[aria-pressed="true"] { background: color-mix(in srgb, var(--link) 14%, transparent); color: var(--link); }
@@ -180,7 +207,6 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
   background: none; color: var(--faint);
 }
 .column h2 .collapse:hover, .column h2 .collapse:focus-visible { background: var(--hover); color: var(--text); }
-/* A collapsed column: a thin strip, name written downwards, that expands on a click. */
 .column.collapsed { cursor: pointer; }
 .column.collapsed:hover { background: var(--hover); }
 .column.collapsed h2 { writing-mode: vertical-rl; padding: 12px 0; align-items: center; gap: 10px; }
@@ -203,10 +229,9 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
 .card .num:hover, #p-key:hover { color: var(--text); }
 #p-key { cursor: copy; }
 .card .num .dot { width: 6px; height: 6px; }
-.card .tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.card .tags, .result .tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 .card .human-mark { flex: none; margin-top: 1px; color: var(--muted); display: inline-flex; }
 .card .human-mark .icon svg { width: 15px; height: 15px; }
-/* An on/off switch, for the Human field. */
 .human-field { display: flex; align-items: center; gap: 10px; }
 .props .human-field .hint { color: var(--faint); font-size: 12px; }
 .switch { position: relative; display: inline-flex; width: 34px; height: 20px; flex: none; }
@@ -219,8 +244,8 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
 .switch input:checked + span { background: #3b82f6; }
 .switch input:checked + span::after { transform: translateX(14px); }
 .switch input:focus-visible + span { box-shadow: 0 0 0 2px var(--hover); }
-.card .desc {
-  margin-top: 2px; color: var(--muted); font-size: 13px;
+.card .desc, .result .desc {
+  display: block; margin-top: 2px; color: var(--muted); font-size: 13px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .tag {
@@ -228,13 +253,15 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
   background: var(--hover); border-radius: 99px; padding: 1px 9px 1px 8px;
 }
 .tag .dot { width: 6px; height: 6px; }
+.tag.url { gap: 4px; color: var(--text); text-decoration: none; }
+.tag.url:hover { background: var(--active); }
+.tag.url .icon svg { width: 12px; height: 12px; }
 .drop-line { height: 2px; background: var(--text); border-radius: 2px; margin: -4px 4px; }
 .empty {
   margin: auto; text-align: center; color: var(--muted); max-width: 380px; padding: 40px 20px;
 }
 .empty h1 { color: var(--text); font-size: 22px; font-weight: 600; letter-spacing: -.01em; }
 
-/* Task panel */
 .panel {
   position: fixed; top: 0; right: 0; bottom: 0; width: min(500px, 100vw); background: var(--panel);
   border-left: 1px solid var(--border); box-shadow: var(--shadow);
@@ -248,7 +275,6 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
 .panel .top .ghost { width: auto; padding: 6px; color: var(--muted); }
 .panel .top .ghost:hover { color: var(--text); }
 .panel .top .ghost.danger:hover { color: var(--danger); background: var(--danger-bg); }
-/* The project, shown as a tag; picking another one moves the task. */
 .panel .project-pick select {
   appearance: none; -webkit-appearance: none; border: 0; background: none; padding: 0; margin: 0;
   font-size: inherit; color: inherit; cursor: pointer; field-sizing: content;
@@ -257,7 +283,6 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
 .panel .body { overflow-y: auto; padding: 8px 20px 24px; display: flex; flex-direction: column; gap: 20px; flex: 1; }
 /* The body scrolls instead; without this a long task squeezes the title and textareas to nothing. */
 .panel .body > * { flex-shrink: 0; }
-/* Title and description look like text and are edited in place. */
 .panel .inline {
   border: 0; background: none; padding: 6px 10px; margin: -6px -10px; border-radius: 10px;
   width: calc(100% + 20px); resize: none; overflow: hidden; display: block;
@@ -268,6 +293,14 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
 .props { display: grid; grid-template-columns: 96px 1fr; gap: 8px 12px; align-items: center; color: var(--muted); }
 .props select { width: auto; padding: 4px 30px 4px 12px; border-radius: 99px; text-transform: capitalize; }
 .props span { color: var(--text); }
+.props > [data-prop] { display: contents; }
+[data-hide~="description"] .desc, [data-hide~="description"] [data-prop="description"],
+[data-hide~="tags"] [data-prop="tags"], [data-hide~="url"] [data-prop="url"],
+[data-hide~="human"] .human-mark, [data-hide~="human"] [data-prop="human"],
+[data-hide~="created"] [data-prop="created"],
+[data-hide~="updated"] [data-prop="updated"],
+[data-hide~="comments"] .result .comments, [data-hide~="comments"] [data-prop="comments"],
+[data-hide~="images"] .panel .thumbs { display: none; }
 .section h3 {
   font-size: 13px; color: var(--muted); margin: 0 0 8px; font-weight: 600;
   display: flex; align-items: center; gap: 8px;
@@ -276,7 +309,6 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
 .comment { padding: 10px 0; }
 .comment:first-child { padding-top: 0; }
 .comment .who { font-size: 12px; color: var(--faint); margin-bottom: 2px; display: flex; align-items: center; gap: 4px; }
-/* Each comment's delete button shows on hover, like the sidebar's "more" button. */
 .comment .remove {
   margin-left: auto; padding: 3px; border: 0; border-radius: 6px; background: none; color: var(--faint);
   visibility: hidden;
@@ -286,7 +318,6 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
 .comment .remove .icon svg { width: 14px; height: 14px; }
 @media (hover: none) { .comment .remove { visibility: visible; } }
 .comment .who b { color: var(--text); font-weight: 600; }
-/* Attached images: thumbnails that open the full image, with an × to remove. */
 .thumbs { display: flex; flex-wrap: wrap; gap: 8px; }
 .thumbs:empty { display: none; }
 #p-images { margin-top: 10px; }
@@ -304,7 +335,6 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
 .section.dropping { background: var(--hover); border-radius: 12px; }
 .composer.dropping { background: var(--active); }
 
-/* The comment box, with its send button inside like a chat composer. */
 .composer { position: relative; margin-top: 6px; background: var(--field); border-radius: 20px; }
 .composer textarea {
   display: block; width: 100%; min-height: 84px; max-height: 50vh; resize: none; border: 0; background: none;
@@ -318,7 +348,6 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
 .composer .send:disabled { opacity: .25; cursor: default; }
 .composer .send .icon svg { width: 16px; height: 16px; stroke-width: 2.2; }
 
-/* Rendered Markdown */
 .md > :first-child { margin-top: 0; }
 .md > :last-child { margin-bottom: 0; }
 .md p, .md ul, .md ol, .md pre, .md blockquote { margin: 0 0 .6em; }
@@ -332,7 +361,6 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
 .md blockquote { border-left: 3px solid var(--active); padding-left: 10px; color: var(--muted); }
 .md a { color: var(--link); }
 
-/* The search window, as in ChatGPT. */
 .search-dialog {
   position: fixed; inset: 0; z-index: 40; background: rgba(0,0,0,.45);
   display: flex; justify-content: center; align-items: flex-start; padding: 12vh 16px 16px;
@@ -343,7 +371,9 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
 }
 .search-field { display: flex; align-items: center; gap: 10px; padding: 14px 18px; border-bottom: 1px solid var(--border); }
 .search-field .icon { color: var(--faint); }
-.search-field input { flex: 1; min-width: 0; border: 0; background: none; font-size: 16px; }
+.search-field .query { flex: 1; min-width: 0; }
+.search-field input { width: 100%; padding: 0; border: 0; background: none; font-size: 16px; }
+.search-field .query-mirror { font-size: 16px; }
 .search-field input::-webkit-search-cancel-button { display: none; }
 .results { overflow-y: auto; padding: 6px; }
 .dialog-window {
@@ -353,7 +383,6 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
 .dialog-window h2 { margin: 0; font-size: 17px; font-weight: 600; }
 .dialog-window p { margin: 0; color: var(--muted); line-height: 1.45; }
 .dialog-window .row { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
-/* The settings window, as in Claude's: categories on the left, their settings on the right. */
 .settings-window {
   width: min(760px, 100%); height: min(460px, 76vh); display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden;
   background: var(--panel); border: 1px solid var(--border); border-radius: 18px; box-shadow: var(--shadow);
@@ -367,6 +396,7 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
 #settings-nav .active { background: var(--active); }
 .settings-pane { display: flex; flex-direction: column; gap: 12px; padding: 18px 22px; overflow-y: auto; }
 .settings-pane h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.settings-pane .setting + h3 { margin-top: 12px; }
 .settings-pane p { margin: 0; color: var(--muted); line-height: 1.45; }
 .settings-pane .error { color: var(--danger); white-space: pre-line; font-size: 13px; }
 .settings-pane .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -377,11 +407,9 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
 .setting { display: flex; align-items: center; gap: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
 .setting .text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .setting .text span { color: var(--muted); font-size: 13px; }
+.setting select.field { width: auto; flex: none; }
 label.setting { cursor: pointer; }
-/* Joining a board: the address, under the row that offers it. */
-/* A setting that can't change now, like sharing while this computer uses another board. */
 .setting.disabled, .popover form.disabled { opacity: .5; cursor: default; }
-/* The share popover, under its icon: share this board, or join another computer's. */
 .popover {
   position: fixed; z-index: 30; width: 340px; max-width: calc(100vw - 16px); padding: 16px;
   display: flex; flex-direction: column; gap: 12px; background: var(--menu);
@@ -393,7 +421,6 @@ label.setting { cursor: pointer; }
 .popover .row .field { flex: 1; min-width: 0; }
 .popover .error { margin: 0; color: var(--danger); font-size: 13px; }
 .popover .hint { margin: 0; color: var(--faint); font-size: 12px; }
-/* The addresses other computers join, each copied with a click. */
 #network-addresses { display: flex; flex-direction: column; gap: 6px; }
 .popover .copy {
   display: flex; align-items: center; gap: 8px; padding: 8px 12px; border: 0; border-radius: 10px;
@@ -406,7 +433,6 @@ label.setting { cursor: pointer; }
 /* One solid red in both themes: dark mode's --danger is a light red for text. */
 .btn.danger { background: #dc2626; color: #fff; }
 .btn.danger:hover, .btn.danger:focus-visible { background: #dc2626; opacity: .85; }
-/* The computers using a shared board. */
 .guests { display: flex; flex-direction: column; gap: 8px; }
 .guests .label { color: var(--muted); font-size: 13px; }
 .guest { display: flex; align-items: center; gap: 8px; }
@@ -415,12 +441,17 @@ label.setting { cursor: pointer; }
 .results .label { color: var(--faint); font-size: 12px; padding: 8px 12px 4px; }
 .results .note { color: var(--faint); padding: 14px 12px; }
 .result {
-  display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 12px; border: 0; border-radius: 10px;
+  display: flex; align-items: flex-start; gap: 10px; width: 100%; padding: 10px 12px; border: 0; border-radius: 10px;
   background: none; text-align: left;
 }
 .result.selected { background: var(--hover); }
-.result .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.result .meta { flex: none; display: flex; align-items: center; gap: 8px; color: var(--faint); font-size: 12px; }
+.result.selected .tag { background: var(--active); }
+.result .dot { margin-top: 6px; }
+.result .body { flex: 1; min-width: 0; }
+.result .title { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.result .meta { flex: none; display: flex; align-items: center; gap: 8px; margin-top: 2px; color: var(--faint); font-size: 12px; }
+.result .comments { display: inline-flex; align-items: center; gap: 4px; }
+.result .comments .icon svg { width: 13px; height: 13px; }
 
 .toast {
   white-space: pre-line; max-width: min(640px, calc(100vw - 32px));
@@ -428,6 +459,15 @@ label.setting { cursor: pointer; }
   padding: 9px 16px; border-radius: 99px; z-index: 20; box-shadow: var(--shadow); font-weight: 500;
 }
 .offline { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); background: var(--danger); color: #fff; padding: 4px 12px; border-radius: 99px; font-size: 12px; z-index: 20; }
+/* The theme switcher at the bottom of the sidebar: one pill per look, and the versions. */
+.theme-bar { margin-top: 8px; padding: 6px 6px 0; display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--border); }
+.theme-tabs { display: flex; gap: 2px; padding: 2px; border-radius: 99px; background: var(--hover); }
+.theme-tab {
+  flex: 1; padding: 4px 6px; border: 0; border-radius: 99px; background: none; color: var(--muted); font-size: 12px;
+}
+.theme-tab:hover, .theme-tab:focus-visible { color: var(--text); }
+.theme-tab[aria-pressed="true"] { background: var(--bg); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+.theme-version { color: var(--faint); font-size: 11px; text-align: right; font-variant-numeric: tabular-nums; }
 [hidden] { display: none !important; }
 
 @media (max-width: 700px) {
@@ -438,10 +478,14 @@ label.setting { cursor: pointer; }
   .nav a { width: auto; }
   .nav .label { display: none; }
   #new-project-toggle { display: none; }
+  .theme-bar { display: none; }
   .columns { grid-auto-columns: minmax(78vw, 1fr); padding: 0 12px 12px; }
   .settings-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
   #settings-nav { flex-direction: row; border-right: 0; border-bottom: 1px solid var(--border); }
   header { padding: 12px; }
+  #filters { order: 1; }
+  #filter-box { order: 1; flex: 1 0 100%; }
+  #filter { width: 100%; }
 }
 </style>
 </head>
@@ -456,11 +500,17 @@ label.setting { cursor: pointer; }
   <nav class="nav" id="nav"></nav>
   <button class="ghost update" id="update" hidden><span class="icon" data-icon="update"></span><span id="update-label"></span></button>
   <button class="ghost" id="settings" aria-haspopup="menu"><span class="icon" data-icon="settings"></span>Settings</button>
+  <div class="theme-bar" id="theme-bar" data-agent="theme-switcher">
+    <div class="theme-tabs" role="group" aria-label="Theme" id="theme-tabs"></div>
+    <div class="theme-version" id="theme-version"></div>
+  </div>
 </aside>
 
 <main>
   <header>
     <div class="info" id="header"></div>
+    <div id="filters"></div>
+    <span class="query" id="filter-box" hidden><span class="query-mirror" aria-hidden="true"><span></span></span><input type="search" id="filter" placeholder="Filter board" title="Show only the tasks that match, like tag:bug or -status:done (f)" aria-label="Filter the board" autocomplete="off" spellcheck="false"></span>
     <button class="ghost" id="human-only" title="Show only human tasks (h)" aria-label="Show only human tasks" aria-pressed="false" hidden><span class="icon" data-icon="human"></span></button>
     <button class="ghost" id="network" aria-haspopup="dialog" aria-controls="network-menu"></button>
     <button class="btn primary" id="new-task" title="New task (n)" hidden><span class="icon" data-icon="plus"></span>New task</button>
@@ -480,18 +530,19 @@ label.setting { cursor: pointer; }
     <textarea class="inline title-input" id="p-title" rows="1" spellcheck="false" placeholder="Task title"></textarea>
     <div class="props">
       Status <span><select class="field" id="p-status"></select></span>
-      Tags <span><input class="inline" id="p-tags" placeholder="Add tags, like bug, ui" autocomplete="off" spellcheck="false"></span>
-      Human <span class="human-field"><label class="switch"><input type="checkbox" id="p-human" aria-label="Human task"><span></span></label><span class="hint">Agents skip it</span></span>
-      Created <span id="p-created"></span>
-      Updated <span id="p-updated"></span>
+      <div data-prop="tags">Tags <span><input class="inline" id="p-tags" placeholder="Add tags, like bug, ui" autocomplete="off" spellcheck="false"></span></div>
+      <div data-prop="url">URL <span><input class="inline" id="p-url" type="url" placeholder="Add a link, like a pull request" autocomplete="off" spellcheck="false"></span></div>
+      <div data-prop="human">Human <span class="human-field"><label class="switch"><input type="checkbox" id="p-human" aria-label="Human task"><span></span></label><span class="hint">Agents skip it</span></span></div>
+      <div data-prop="created">Created <span id="p-created"></span></div>
+      <div data-prop="updated">Updated <span id="p-updated"></span></div>
     </div>
-    <div class="section">
+    <div class="section" data-prop="description">
       <h3>Description</h3>
       <textarea class="inline desc-input" id="p-desc" rows="1" placeholder="Add a description (Markdown)"></textarea>
       <div class="inline md desc-view" id="p-desc-view" tabindex="0" role="button" aria-label="Edit description" hidden></div>
       <div class="thumbs" id="p-images"></div>
     </div>
-    <div class="section">
+    <div class="section" data-prop="comments">
       <h3>Comments <span class="count" id="p-comment-count"></span></h3>
       <div id="p-comments"></div>
       <form class="composer" id="p-comment-form">
@@ -521,6 +572,12 @@ label.setting { cursor: pointer; }
           <span class="text">Backlog column<span>A column before todo, for tasks agents leave alone</span></span>
           <span class="switch"><input type="checkbox" id="settings-backlog" aria-label="Backlog column"><span></span></span>
         </label>
+        <label class="setting">
+          <span class="text">Theme<span>The look of the board, in every browser that opens it</span></span>
+          <select class="field" id="settings-theme" aria-label="Theme"></select>
+        </label>
+        <h3>Task properties</h3>
+        <p>Turn one off to hide it on the board and leave it out of what agents get. Nothing is deleted.</p>
       </section>
       <form class="settings-pane" data-section="sync" id="sync-form">
         <h3>Sync</h3>
@@ -577,7 +634,7 @@ label.setting { cursor: pointer; }
 </div>
 <div class="search-dialog" id="search-dialog" hidden>
   <div class="search-window" role="dialog" aria-label="Search tasks">
-    <label class="search-field"><span class="icon" data-icon="search"></span><input id="search" type="search" placeholder="Search tasks" autocomplete="off" spellcheck="false" aria-label="Search tasks"></label>
+    <label class="search-field"><span class="icon" data-icon="search"></span><span class="query"><span class="query-mirror" aria-hidden="true"><span></span></span><input id="search" type="search" placeholder="Search tasks" autocomplete="off" spellcheck="false" aria-label="Search tasks"></span></label>
     <div class="results" id="search-results"></div>
   </div>
 </div>
