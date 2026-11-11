@@ -1,0 +1,27 @@
+/* Skeletal LCARS tokens. Drop this block on :root (or a theme scope) and build with the names. */
+:root {
+  --sk-void: #000000;
+  --sk-rail: #03060a;
+  --sk-blue-lead: #3b82f6;
+  --sk-blue-dim: #1e3a8a;
+  --sk-cyan: #38bdf8;
+  --sk-lavender: #a78bfa;
+  --sk-lavender-dim: #4c1d95;
+  --sk-ice: #c7d2fe;
+  --sk-gold: #facc15;
+  --sk-amber: #fb923c;
+  --sk-coral: #f43f5e;
+  --sk-crimson: #ef4444;
+  --sk-emerald: #10b981;
+  --sk-teal: #14b8a6;
+  --sk-hairline: rgba(56, 189, 248, 0.14);
+  --sk-hairline-card: rgba(148, 163, 184, 0.12);
+  --sk-text: #f1f5f9;
+  --sk-muted: #64748b;
+  --sk-ghost: #334155;
+  --sk-font: "Antonio", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --sk-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --sk-elbow: 24px;
+  --sk-radius: 4px;
+  --sk-pill: 9999px;
+}
