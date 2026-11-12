@@ -25,13 +25,18 @@ const INDEX: &str = include_str!("index.html");
 const IMAGE_LIMIT: usize = 25 * 1024 * 1024;
 const APP_JS: &str = include_str!("app.js");
 const LOGO: &[u8] = include_bytes!("logo.png");
-const LCARS_CSS: &str = include_str!("lcars.css");
-/// Applies the remembered theme before first paint; the footer toggle in app.js stores it.
+/// Applies `/?theme=` before first paint; the page already carries the board's saved theme.
 const THEME_JS: &str = include_str!("theme.js");
-/// Antonio Bold, SIL Open Font License (fonts/OFL.txt).
+/// The LCARS theme, every rule under `html[data-theme="lcars"]`.
+const LCARS_CSS: &str = include_str!("lcars.css");
+/// The Skeletal LCARS theme, every rule under `html[data-theme="skeletal"]`.
+const SKELETAL_CSS: &str = include_str!("skeletal.css");
+/// Antonio, variable weight, SIL Open Font License (fonts/OFL.txt); the LCARS typeface.
 const ANTONIO: &[u8] = include_bytes!("fonts/antonio.woff2");
-/// The LCARS theme's version, also on the first line of lcars.css and in its `--lcars-theme-version`.
+/// Each theme's version, also on the first line of its stylesheet and in its
+/// `--theme-version` (a test checks they agree). Bump it with every visible change.
 const LCARS_VERSION: &str = "0.2";
+const SKELETAL_VERSION: &str = "0.1";
 
 /// Scripts only from this server, so even a bug in the Markdown renderer cannot run injected script.
 const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; \
@@ -174,14 +179,13 @@ fn router(home: Home, guard: Arc<Guard>, shutdown: CancellationToken) -> Router 
         .route("/api/sync", get(sync_status).post(sync_now).put(sync_repo))
         .route("/api/settings", patch(update_settings))
         .route_layer(middleware::from_fn_with_state(guard.clone(), forward));
-    page(Theme::Kanzo);
-    page(Theme::Lcars);
     Router::new()
         .route("/", get(index))
-        .route("/lcars.css", get(|| async { ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], LCARS_CSS) }))
-        .route("/theme.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], THEME_JS) }))
-        .route("/fonts/antonio.woff2", get(|| async { ([(header::CONTENT_TYPE, "font/woff2")], ANTONIO) }))
         .route("/app.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], APP_JS) }))
+        .route("/theme.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], THEME_JS) }))
+        .route("/lcars.css", get(|| async { ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], LCARS_CSS) }))
+        .route("/skeletal.css", get(|| async { ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], SKELETAL_CSS) }))
+        .route("/fonts/antonio.woff2", get(|| async { ([(header::CONTENT_TYPE, "font/woff2")], ANTONIO) }))
         .route("/logo.png", get(|| async { ([(header::CONTENT_TYPE, "image/png")], LOGO) }))
         .route("/api/ping", get(|| async { "kanzo" }))
         .route("/api/update", get(update_status).post(update_now))
@@ -192,49 +196,43 @@ fn router(home: Home, guard: Arc<Guard>, shutdown: CancellationToken) -> Router 
         .with_state(Arc::new(home))
 }
 
-#[derive(Deserialize)]
-struct PageQuery {
-    theme: Option<String>,
-}
-
-/// `theme` in config.toml picks the default; `/?theme=lcars` or `/?theme=kanzo` overrides it and
-/// theme.js remembers that choice (and the footer toggle's) in the browser.
-async fn index(State(home): Shared, Query(q): Query<PageQuery>) -> Html<&'static str> {
-    let theme =
-        q.theme.as_deref().and_then(Theme::parse).unwrap_or_else(|| home.config.theme().unwrap_or(Theme::Kanzo));
+/// The board page, marked with the theme picked on the board, or failing that the one in
+/// config.toml, so the first paint is already right. `/?theme=` is applied by theme.js.
+async fn index(State(home): Shared) -> Html<&'static str> {
+    let theme = blocking({
+        let home = home.clone();
+        move || home.store().and_then(|s| s.theme())
+    })
+    .await
+    .ok()
+    .and_then(|t| t.ok().flatten())
+    .and_then(|t| Theme::parse(&t))
+    .unwrap_or_else(|| home.config.theme().unwrap_or(Theme::Kanzo));
     Html(page(theme))
 }
 
-/// The board page with the theme marker on `<html>`, the theme switch script, the LCARS stylesheet
-/// (inert unless the marker says `lcars`) and the version footer with its toggle, built once per theme.
+/// The board page with `data-theme` on `<html>`, built once per theme. Two `<meta>` tags
+/// tell agents and scripts the versions of Kanzo and of each theme.
 fn page(theme: Theme) -> &'static str {
-    static PAGES: [OnceLock<String>; 2] = [OnceLock::new(), OnceLock::new()];
-    let (slot, name) = match theme {
-        Theme::Kanzo => (&PAGES[0], "kanzo"),
-        Theme::Lcars => (&PAGES[1], "lcars"),
-    };
-    slot.get_or_init(|| {
-        let v = update::CURRENT;
+    static PAGES: [OnceLock<String>; Theme::ALL.len()] = [const { OnceLock::new() }; Theme::ALL.len()];
+    PAGES[theme as usize].get_or_init(|| {
         INDEX
-            .replacen("<html lang=\"en\">", &format!("<html lang=\"en\" data-theme=\"{name}\">"), 1)
+            .replacen("<html lang=\"en\">", &format!("<html lang=\"en\" data-theme=\"{}\">", theme.name()), 1)
             .replacen(
                 "</head>",
                 &format!(
-                    "<meta name=\"kanzo-version\" content=\"{v}\">\n<script src=\"/theme.js\"></script>\n\
-                     <link rel=\"stylesheet\" href=\"/lcars.css\">\n</head>"
-                ),
-                1,
-            )
-            .replacen(
-                "</aside>",
-                &format!(
-                    "  <div class=\"lcars-footer\" data-agent=\"theme-footer\"><span>LCARS THEME v{LCARS_VERSION} · KANZO {v}</span>\
-                     <button type=\"button\" class=\"theme-toggle\" id=\"theme-toggle\" data-agent=\"theme-toggle\" \
-                     title=\"Switch theme\">theme</button></div>\n</aside>"
+                    "<meta name=\"kanzo-version\" content=\"{}\">\n\
+                     <meta name=\"kanzo-themes\" content=\"kanzo lcars={LCARS_VERSION} skeletal={SKELETAL_VERSION}\">\n</head>",
+                    update::CURRENT
                 ),
                 1,
             )
     })
+}
+
+/// The look the board shows now: the one picked on it, or the one in config.toml.
+fn current_theme(home: &Home, s: &Store) -> store::Result<Theme> {
+    Ok(s.theme()?.as_deref().and_then(Theme::parse).unwrap_or_else(|| home.config.theme().unwrap_or(Theme::Kanzo)))
 }
 
 /// DNS rebinding needs a domain name the attacker controls, so the board only accepts
@@ -478,6 +476,8 @@ struct Board {
     projects: Vec<store::Project>,
     statuses: Vec<String>,
     tasks: Vec<store::Task>,
+    /// The look every browser shows, picked in Settings or the sidebar switcher.
+    theme: &'static str,
     version: &'static str,
 }
 
@@ -500,6 +500,7 @@ async fn board(State(home): Shared, Query(q): Query<BoardQuery>) -> Response {
             projects: s.list_projects()?,
             statuses: s.statuses().to_vec(),
             tasks,
+            theme: current_theme(h, s)?.name(),
             version: update::CURRENT,
         })
     })
@@ -589,12 +590,17 @@ async fn create_task(State(home): Shared, Json(t): Json<NewTask>) -> Response {
 enum Settings {
     Backlog { backlog: bool },
     Property { property: String, visible: bool },
+    Theme { theme: String },
 }
 
 async fn update_settings(State(home): Shared, Json(r): Json<Settings>) -> Response {
     with_store(home, move |_, s| match r {
         Settings::Backlog { backlog } => s.set_backlog(backlog),
         Settings::Property { property, visible } => s.set_property(&property, visible),
+        Settings::Theme { theme } => match Theme::parse(&theme) {
+            Some(t) => s.set_theme(t.name()),
+            None => Err(Error::Invalid(format!("theme {theme:?} should be one of {}", Theme::NAMES.join(", ")))),
+        },
     })
     .await
 }
@@ -875,21 +881,28 @@ fn open_browser(url: &str) {
 mod tests {
     use super::*;
 
+    /// Each theme is one attribute on `<html>`; its stylesheet and script are in the page
+    /// for every theme, so switching needs no reload.
     #[test]
-    fn pages_inject_theme_switch_stylesheet_and_version() {
-        for (theme, name) in [(Theme::Kanzo, "kanzo"), (Theme::Lcars, "lcars")] {
+    fn page_carries_the_theme_and_the_versions_agree() {
+        for theme in Theme::ALL {
             let page = page(theme);
-            assert!(page.contains(&format!("<html lang=\"en\" data-theme=\"{name}\">")));
-            assert!(page.contains(
-                "<script src=\"/theme.js\"></script>\n<link rel=\"stylesheet\" href=\"/lcars.css\">\n</head>"
-            ));
+            assert!(page.starts_with(&format!("<!doctype html>\n<html lang=\"en\" data-theme=\"{}\">", theme.name())));
+            assert_eq!(page.matches("data-theme=").count(), 1, "{}", theme.name());
             assert!(page.contains(&format!("<meta name=\"kanzo-version\" content=\"{}\">", update::CURRENT)));
-            assert!(page.contains(&format!("LCARS THEME v{LCARS_VERSION} · KANZO {}</span>", update::CURRENT)));
-            assert!(page.contains("id=\"theme-toggle\""));
+            assert!(page.contains(&format!("<meta name=\"kanzo-themes\" content=\"kanzo lcars={LCARS_VERSION} skeletal={SKELETAL_VERSION}\">\n</head>")));
         }
-        assert!(LCARS_CSS.starts_with(&format!("/* LCARS theme v{LCARS_VERSION} */")));
-        assert!(LCARS_CSS.contains(&format!("--lcars-theme-version: \"{LCARS_VERSION}\"")));
-        assert!(!INDEX.contains("lcars"));
+        for file in ["/theme.js", "/lcars.css", "/skeletal.css"] {
+            assert!(INDEX.contains(&format!("\"{file}\"")), "index.html should load {file}");
+        }
+        assert!(!INDEX.contains("data-theme="), "the server adds data-theme");
+        for (css, version, name) in
+            [(LCARS_CSS, LCARS_VERSION, "LCARS"), (SKELETAL_CSS, SKELETAL_VERSION, "Skeletal LCARS")]
+        {
+            assert!(css.starts_with(&format!("/* {name} theme v{version} */")), "{name}: first line");
+            assert!(css.contains(&format!("--theme-version: \"{version}\"")), "{name}: --theme-version");
+        }
+        assert!(CSP.contains("font-src 'self'"), "the themes load Antonio from this server");
     }
 
     #[test]

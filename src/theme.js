@@ -1,12 +1,10 @@
-// Theme switch, loaded blocking in <head> so the stored choice applies before first paint.
-// The server sets data-theme on <html> from config.toml; /?theme=lcars|kanzo overrides and
-// is remembered; otherwise the choice saved by the footer toggle (localStorage kanzo.theme) wins.
+// Previews a look for one visit: /?theme=kanzo|lcars|skeletal. Loaded blocking in <head>
+// so it applies before first paint. The page already carries the board's saved theme;
+// the switcher at the bottom of the sidebar, in app.js, is what saves a pick.
 (function () {
-  var THEMES = ["kanzo", "lcars"];
   var pick = new URLSearchParams(location.search).get("theme");
-  try {
-    if (THEMES.indexOf(pick) >= 0) localStorage.setItem("kanzo.theme", pick);
-    else pick = localStorage.getItem("kanzo.theme");
-  } catch (e) { /* storage blocked: keep the server's default */ }
-  if (THEMES.indexOf(pick) >= 0) document.documentElement.dataset.theme = pick;
+  if (pick && ["kanzo", "lcars", "skeletal"].indexOf(pick) >= 0) {
+    document.documentElement.dataset.theme = pick;
+    document.documentElement.dataset.themePreview = "";
+  }
 })();

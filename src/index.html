@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Kanzo</title>
 <link rel="icon" href="/logo.png">
+<link rel="stylesheet" href="/lcars.css">
+<link rel="stylesheet" href="/skeletal.css">
+<script src="/theme.js"></script>
 <style>
 :root {
   --bg: #ffffff; --sidebar: #f9f9f9; --col: #f7f7f7; --card: #ffffff; --card-hover: #f4f4f4; --panel: #ffffff;
@@ -404,6 +407,7 @@ header .repo-link .icon svg { width: 14px; height: 14px; }
 .setting { display: flex; align-items: center; gap: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
 .setting .text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .setting .text span { color: var(--muted); font-size: 13px; }
+.setting select.field { width: auto; flex: none; }
 label.setting { cursor: pointer; }
 .setting.disabled, .popover form.disabled { opacity: .5; cursor: default; }
 .popover {
@@ -455,6 +459,15 @@ label.setting { cursor: pointer; }
   padding: 9px 16px; border-radius: 99px; z-index: 20; box-shadow: var(--shadow); font-weight: 500;
 }
 .offline { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); background: var(--danger); color: #fff; padding: 4px 12px; border-radius: 99px; font-size: 12px; z-index: 20; }
+/* The theme switcher at the bottom of the sidebar: one pill per look, and the versions. */
+.theme-bar { margin-top: 8px; padding: 6px 6px 0; display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--border); }
+.theme-tabs { display: flex; gap: 2px; padding: 2px; border-radius: 99px; background: var(--hover); }
+.theme-tab {
+  flex: 1; padding: 4px 6px; border: 0; border-radius: 99px; background: none; color: var(--muted); font-size: 12px;
+}
+.theme-tab:hover, .theme-tab:focus-visible { color: var(--text); }
+.theme-tab[aria-pressed="true"] { background: var(--bg); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+.theme-version { color: var(--faint); font-size: 11px; text-align: right; font-variant-numeric: tabular-nums; }
 [hidden] { display: none !important; }
 
 @media (max-width: 700px) {
@@ -465,6 +478,7 @@ label.setting { cursor: pointer; }
   .nav a { width: auto; }
   .nav .label { display: none; }
   #new-project-toggle { display: none; }
+  .theme-bar { display: none; }
   .columns { grid-auto-columns: minmax(78vw, 1fr); padding: 0 12px 12px; }
   .settings-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
   #settings-nav { flex-direction: row; border-right: 0; border-bottom: 1px solid var(--border); }
@@ -486,6 +500,10 @@ label.setting { cursor: pointer; }
   <nav class="nav" id="nav"></nav>
   <button class="ghost update" id="update" hidden><span class="icon" data-icon="update"></span><span id="update-label"></span></button>
   <button class="ghost" id="settings" aria-haspopup="menu"><span class="icon" data-icon="settings"></span>Settings</button>
+  <div class="theme-bar" id="theme-bar" data-agent="theme-switcher">
+    <div class="theme-tabs" role="group" aria-label="Theme" id="theme-tabs"></div>
+    <div class="theme-version" id="theme-version"></div>
+  </div>
 </aside>
 
 <main>
@@ -553,6 +571,10 @@ label.setting { cursor: pointer; }
         <label class="setting">
           <span class="text">Backlog column<span>A column before todo, for tasks agents leave alone</span></span>
           <span class="switch"><input type="checkbox" id="settings-backlog" aria-label="Backlog column"><span></span></span>
+        </label>
+        <label class="setting">
+          <span class="text">Theme<span>The look of the board, in every browser that opens it</span></span>
+          <select class="field" id="settings-theme" aria-label="Theme"></select>
         </label>
         <h3>Task properties</h3>
         <p>Turn one off to hide it on the board and leave it out of what agents get. Nothing is deleted.</p>

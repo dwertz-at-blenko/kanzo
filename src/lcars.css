@@ -8,7 +8,7 @@
  * config.toml says theme = "lcars" (or the page is opened as /?theme=lcars); the server then marks
  * <html data-theme="lcars">, and every rule below is scoped under that marker, so the default theme
  * never sees any of it. Bump the version in three places together: the first line above,
- * --lcars-theme-version below, and LCARS_VERSION in src/web.rs (a test checks they agree).
+ * --theme-version below, and LCARS_VERSION in src/web.rs (a test checks they agree).
  *
  * Color roles (token names from thelcars.com):
  *   structure: Cool Blue frame, Mariner and Midnight for lines, column borders and low-priority columns
@@ -29,14 +29,8 @@
   50% { border-left-color: var(--lcars-pumpkin); box-shadow: -6px 0 14px -6px var(--lcars-pumpkin); }
 }
 
-/* Footer and theme toggle in the stock Kanzo look (the LCARS block below restyles them). */
-.lcars-footer { margin-top: auto; padding: 10px 10px 0; display: flex; align-items: center; justify-content: flex-end; gap: 8px; color: var(--faint); font-size: 11px; }
-.theme-toggle { font: inherit; font-weight: 600; color: var(--muted); background: var(--hover); border: 0; border-radius: 99px; padding: 2px 9px; cursor: pointer; text-transform: uppercase; letter-spacing: .06em; }
-.theme-toggle:hover, .theme-toggle:focus-visible { background: var(--active); color: var(--text); }
-@media (max-width: 700px) { .lcars-footer { margin: 4px 0 0; padding: 0; } }
-
 html[data-theme="lcars"] {
-  --lcars-theme-version: "0.2";
+  --theme-version: "0.2";
   --lcars-cool-blue: #6699FF;
   --lcars-midnight: #0048F0;
   --lcars-anakiwa: #99CCFF;
@@ -70,7 +64,7 @@ html[data-theme="lcars"] {
   & input:focus-visible, & textarea:focus-visible { outline-offset: 0; }
 
   /* Labels, buttons and headers in Antonio; body text stays in the system sans. */
-  .brand, .ghost, .nav a, .btn, .lcars-footer, header h1, header .sub, .repo-link, #network, .column h2, .card .num,
+  .brand, .ghost, .nav a, .btn, .theme-version, .theme-tab, header h1, header .sub, .repo-link, #network, .column h2, .card .num,
   .tag, .props, .props select, .section h3, .comment .who, .panel .top, .settings-head h2, .settings-pane h3,
   #settings-nav button, .dialog-window h2, .menu .label, .results .label, .result .meta, .empty h1 {
     font-family: var(--lcars-label); text-transform: uppercase; letter-spacing: .06em; font-weight: 700;
@@ -106,9 +100,12 @@ html[data-theme="lcars"] {
   .update { margin-top: 4px; background: var(--lcars-lilac); }
   #settings { margin-top: 0; background: var(--lcars-frame); color: #000; border-radius: 0 0 0 40px; min-height: 52px; }
   #settings:hover, #settings.open { color: #000; }
-  .lcars-footer { padding: 6px 12px 0; color: var(--lcars-cool-blue); font-size: 11.5px; letter-spacing: .14em; text-align: right; text-transform: none; }
-  .theme-toggle { font-family: inherit; font-size: 11px; letter-spacing: .14em; color: #000; background: var(--lcars-cool-blue); border-radius: 99px; padding: 1px 10px; }
-  .theme-toggle:hover, .theme-toggle:focus-visible { background: var(--lcars-anakiwa); color: #000; }
+  .theme-bar { border-top: 0; padding: 6px 12px 0; }
+  .theme-tabs { background: transparent; gap: 4px; padding: 0; }
+  .theme-tab { font-family: inherit; font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: #000; background: var(--lcars-cool-blue); }
+  .theme-tab:hover, .theme-tab:focus-visible { background: var(--lcars-anakiwa); color: #000; }
+  .theme-tab[aria-pressed="true"] { background: var(--lcars-pumpkin); color: #000; box-shadow: none; }
+  .theme-version { color: var(--lcars-cool-blue); font-size: 11.5px; letter-spacing: .14em; text-align: right; }
 
   .nav { gap: 4px; }
   .nav a .name { flex: 1; text-align: right; }
@@ -297,7 +294,6 @@ html[data-theme="lcars"] {
     #new-project-toggle { display: flex; }
     & aside > .ghost { width: auto; min-height: 32px; margin: 0; align-items: center; border-radius: 99px; padding: 4px 14px; font-size: 13px; }
     #settings { min-height: 32px; border-radius: 99px; }
-    .lcars-footer { margin: 0 0 0 auto; padding: 0; font-size: 10.5px; letter-spacing: .1em; }
     & header { padding: 12px 12px 10px; }
     & header::before, & header::after { display: none; }
     & header h1 { font-size: 24px; }

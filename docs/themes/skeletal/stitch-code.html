@@ -1,0 +1,1385 @@
+<!DOCTYPE html>
+
+<html data-theme="skeletal" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>KANZO // SKELETAL LCARS TACTICAL KANBAN</title>
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Antonio:wght@400;600;700&amp;family=JetBrains+Mono:wght@400;500;700&amp;display=swap" rel="stylesheet"/>
+<style>
+/* ==========================================================================
+   KANZO // SKELETAL LCARS CORE CSS
+   Zero-dependency, semantic, hyper-performant CSS architecture
+   ========================================================================== */
+
+:root {
+  /* Trek Functional High-Chroma Spectrum */
+  --c-void: #000000;
+  --c-rail-bg: #03060a;
+  
+  /* Structural & Operational */
+  --c-blue-lead: #3b82f6;
+  --c-blue-dim: #1e3a8a;
+  --c-blue-cyan: #38bdf8;
+  --c-lavender: #a78bfa;
+  --c-lavender-dim: #4c1d95;
+  --c-ice: #c7d2fe;
+  
+  /* Status & Chromatic Telemetry */
+  --c-gold: #facc15;
+  --c-amber: #fb923c;
+  --c-coral: #f43f5e;
+  --c-crimson: #ef4444;
+  --c-emerald: #10b981;
+  --c-teal: #14b8a6;
+  
+  /* Razor Dividers & Low-Noise Spatial Grids */
+  --c-hairline: rgba(56, 189, 248, 0.14);
+  --c-hairline-card: rgba(148, 163, 184, 0.12);
+  --c-text-primary: #f1f5f9;
+  --c-text-muted: #64748b;
+  --c-text-ghost: #334155;
+  
+  /* Typography scale */
+  --font-lcars: 'Antonio', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+  
+  /* Structural Radius (LCARS sweeping elbows) */
+  --rad-elbow: 24px;
+  --rad-pill: 9999px;
+  --rad-card: 4px;
+}
+
+/* Classical 24th Century Theme Option via Switcher */
+html[data-theme="classic-lcars"] {
+  --c-void: #020204;
+  --c-blue-lead: #e89922;
+  --c-blue-cyan: #f2c069;
+  --c-lavender: #cc6699;
+  --c-lavender-dim: #733956;
+  --c-ice: #ffcc99;
+  --c-gold: #e5b035;
+  --c-amber: #d97706;
+  --c-coral: #cc3333;
+  --c-crimson: #b91c1c;
+  --c-hairline: rgba(232, 153, 34, 0.22);
+  --c-hairline-card: rgba(204, 102, 153, 0.18);
+}
+
+/* Base Reset & Void Architecture */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: var(--c-void);
+  color: var(--c-text-primary);
+  font-family: var(--font-lcars);
+  min-height: 100vh;
+  width: 100vw;
+  overflow-x: hidden;
+  letter-spacing: 0.05em;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Hyper-Subtle Background Telemetry Grid */
+.telemetry-grid {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image: 
+    radial-gradient(circle at 10% 20%, rgba(59, 130, 246, 0.03) 0%, transparent 40%),
+    radial-gradient(circle at 90% 80%, rgba(244, 63, 94, 0.02) 0%, transparent 40%),
+    linear-gradient(to right, rgba(255, 255, 255, 0.015) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.015) 1px, transparent 1px);
+  background-size: 100% 100%, 100% 100%, 48px 48px, 48px 48px;
+  z-index: 0;
+}
+
+/* Master Skeletal Outer Rail Layout */
+.app-frame {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 16px 20px 16px 16px;
+  min-height: 100vh;
+  gap: 12px;
+}
+
+/* Top System Header / Elbow Connector */
+.lcars-top-rail {
+  display: grid;
+  grid-template-columns: 260px 1fr auto;
+  align-items: center;
+  gap: 16px;
+  height: 48px;
+}
+
+.brand-capsule {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 100%;
+}
+
+.lcars-corner-block {
+  width: 80px;
+  height: 100%;
+  background: var(--c-blue-lead);
+  border-top-left-radius: var(--rad-elbow);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--c-void);
+  font-weight: 700;
+  font-size: 1.15rem;
+  letter-spacing: 0.1em;
+}
+
+.brand-info {
+  display: flex;
+  flex-direction: column;
+}
+
+.brand-title {
+  font-size: 1.4rem;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--c-ice);
+  text-transform: uppercase;
+}
+
+.brand-meta {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--c-lavender);
+  letter-spacing: 0.12em;
+}
+
+/* Top Skeletal Bridge Rail */
+.skeletal-bridge {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 100%;
+}
+
+.bridge-line {
+  flex: 1;
+  height: 2px;
+  background: linear-gradient(90deg, var(--c-blue-lead) 0%, var(--c-lavender) 60%, var(--c-hairline) 100%);
+  position: relative;
+}
+
+.bridge-line::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  top: -3px;
+  width: 8px;
+  height: 8px;
+  background: var(--c-lavender);
+  border-radius: 50%;
+}
+
+.telemetry-pill-strip {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.tel-pill {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  padding: 4px 10px;
+  border-radius: var(--rad-pill);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--c-hairline);
+  color: var(--c-blue-cyan);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tel-pill .pulse-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--c-emerald);
+  box-shadow: 0 0 6px var(--c-emerald);
+  animation: blink 2s infinite ease-in-out;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+/* Top Right Action & Theme Switcher */
+.system-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sys-btn {
+  background: transparent;
+  border: 1px solid var(--c-hairline);
+  color: var(--c-text-primary);
+  font-family: var(--font-lcars);
+  font-size: 0.9rem;
+  padding: 6px 14px;
+  cursor: pointer;
+  letter-spacing: 0.08em;
+  transition: all 0.15s ease;
+  text-transform: uppercase;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sys-btn:hover {
+  background: rgba(56, 189, 248, 0.12);
+  border-color: var(--c-blue-cyan);
+  color: var(--c-blue-cyan);
+}
+
+.sys-btn.accent-gold {
+  border-color: rgba(250, 204, 21, 0.4);
+  color: var(--c-gold);
+}
+.sys-btn.accent-gold:hover {
+  background: var(--c-gold);
+  color: var(--c-void);
+}
+
+/* LCARS Theme Switcher Switch */
+.theme-switch-wrap {
+  display: flex;
+  border: 1px solid var(--c-hairline);
+  border-radius: var(--rad-pill);
+  padding: 2px;
+  background: rgba(0,0,0,0.6);
+}
+
+.theme-tab {
+  background: none;
+  border: none;
+  color: var(--c-text-muted);
+  font-family: var(--font-lcars);
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: var(--rad-pill);
+  cursor: pointer;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.theme-tab.active {
+  background: var(--c-blue-lead);
+  color: var(--c-void);
+}
+
+/* Main Split View: Left Spine Rail + Main Void Kanban */
+.lcars-core-body {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  gap: 20px;
+  flex: 1;
+  margin-top: 4px;
+}
+
+/* Left Skeletal Spine Rail */
+.lcars-spine-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  border-right: 1px solid var(--c-hairline);
+  padding-right: 16px;
+}
+
+.spine-header-block {
+  background: var(--c-lavender);
+  color: var(--c-void);
+  padding: 8px 12px;
+  font-weight: 700;
+  font-size: 1.1rem;
+  letter-spacing: 0.1em;
+  border-radius: 0 12px 0 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.spine-nav-cluster {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.nav-link-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  font-size: 0.95rem;
+  color: var(--c-text-muted);
+  text-decoration: none;
+  border-left: 2px solid transparent;
+  transition: all 0.15s;
+}
+
+.nav-link-row:hover, .nav-link-row.active {
+  color: var(--c-blue-cyan);
+  border-left-color: var(--c-blue-cyan);
+  background: rgba(56, 189, 248, 0.04);
+}
+
+.nav-link-row .count {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--c-lavender);
+}
+
+.spine-metric-card {
+  margin-top: auto;
+  border-top: 1px dashed var(--c-hairline);
+  padding-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.metric-title {
+  font-size: 0.7rem;
+  color: var(--c-text-muted);
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+}
+
+.metric-number {
+  font-size: 1.8rem;
+  font-weight: 700;
+  color: var(--c-amber);
+  line-height: 1;
+}
+
+.mini-graph {
+  display: flex;
+  height: 20px;
+  align-items: flex-end;
+  gap: 3px;
+}
+.graph-bar {
+  flex: 1;
+  background: var(--c-blue-dim);
+}
+.graph-bar.highlight {
+  background: var(--c-coral);
+  height: 90% !important;
+}
+
+/* Kanban Board Void Stage */
+.kanban-viewport {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(220px, 1fr));
+  gap: 16px;
+  overflow-x: auto;
+  padding-bottom: 12px;
+}
+
+/* Column Architecture */
+.kanban-col {
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100vh - 150px);
+  position: relative;
+  transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+
+/* Column Header: Sleek LCARS Pill / Stamped Bar */
+.col-header {
+  padding: 6px 10px;
+  border-bottom: 2px solid var(--col-accent, var(--c-blue-lead));
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 12px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.02) 0%, transparent 100%);
+}
+
+.col-label-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.col-tag-id {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--col-accent, var(--c-blue-lead));
+  letter-spacing: 0.1em;
+}
+
+.col-name {
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--c-text-primary);
+  text-transform: uppercase;
+}
+
+.col-counter {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--col-accent, var(--c-blue-lead));
+  font-weight: 700;
+}
+
+/* Column-specific Functional Chroma mapping */
+.kanban-col[data-status="backlog"] {
+  --col-accent: var(--c-text-muted);
+}
+.kanban-col[data-status="todo"] {
+  --col-accent: var(--c-blue-cyan);
+}
+.kanban-col[data-status="in-progress"] {
+  --col-accent: var(--c-lavender);
+}
+.kanban-col[data-status="testing"] {
+  --col-accent: var(--c-amber);
+}
+.kanban-col[data-status="done"] {
+  --col-accent: var(--c-emerald);
+}
+
+/* Card Slot & Drop Zones */
+.task-stream {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+  min-height: 120px;
+  padding: 4px;
+  border: 1px solid transparent;
+  border-radius: var(--rad-card);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Dragover highlight on task stream */
+.task-stream.drag-target {
+  background: rgba(56, 189, 248, 0.03);
+  border-color: rgba(56, 189, 248, 0.25);
+  box-shadow: inset 0 0 16px rgba(56, 189, 248, 0.05);
+}
+
+/* Dynamic LCARS Drop Indicator Slot */
+.card-drop-placeholder {
+  position: relative;
+  height: 52px;
+  border: 1px dashed var(--c-blue-cyan);
+  background: rgba(56, 189, 248, 0.06);
+  border-radius: var(--rad-card);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  animation: pulse-drop-slot 1.2s infinite ease-in-out;
+  transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.card-drop-placeholder::before {
+  content: "» TARGET VECTOR SLOT «";
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--c-blue-cyan);
+  letter-spacing: 0.15em;
+  opacity: 0.85;
+}
+
+@keyframes pulse-drop-slot {
+  0%, 100% {
+    opacity: 0.8;
+    box-shadow: 0 0 8px rgba(56, 189, 248, 0.25), inset 0 0 8px rgba(56, 189, 248, 0.1);
+  }
+  50% {
+    opacity: 0.45;
+    box-shadow: 0 0 3px rgba(56, 189, 248, 0.1), inset 0 0 2px rgba(56, 189, 248, 0.03);
+  }
+}
+
+/* ==========================================================================
+   RAZOR-THIN TASK CARDS (Anti-Bloat / Anti-Box ADHD architecture)
+   No heavy box backgrounds. Uses precise single-pixel high-chroma hairline
+   anchors and vertical spatial rhythm.
+   ========================================================================== */
+.kanzo-card {
+  position: relative;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.015);
+  border: 1px solid var(--c-hairline-card);
+  border-left: 3px solid var(--card-alert, var(--c-hairline));
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+              box-shadow 0.2s ease,
+              background 0.2s ease,
+              border-color 0.2s ease,
+              opacity 0.2s ease;
+  cursor: grab;
+  user-select: none;
+}
+
+.kanzo-card:active {
+  cursor: grabbing;
+}
+
+.kanzo-card:hover {
+  background: rgba(255, 255, 255, 0.04);
+  transform: translateY(-2px);
+  border-color: rgba(255, 255, 255, 0.2);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.8);
+}
+
+/* Card Dragging State */
+.kanzo-card.is-dragging {
+  opacity: 0.45;
+  transform: scale(0.97);
+  border: 1px dashed var(--c-blue-cyan) !important;
+  border-left: 3px solid var(--c-gold) !important;
+  box-shadow: 0 0 16px rgba(56, 189, 248, 0.25), inset 0 0 12px rgba(56, 189, 248, 0.08);
+  cursor: grabbing !important;
+}
+
+/* Card Drop Success Telemetry Pulse */
+.kanzo-card.just-dropped {
+  animation: cardDropFlash 0.65s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes cardDropFlash {
+  0% {
+    transform: scale(0.98);
+    box-shadow: 0 0 20px rgba(56, 189, 248, 0.6), inset 0 0 10px rgba(56, 189, 248, 0.3);
+    border-color: var(--c-blue-cyan);
+  }
+  100% {
+    transform: scale(1);
+    box-shadow: none;
+  }
+}
+
+/* High-Chroma Alert Hierarchy Mapping */
+.kanzo-card[data-priority="critical"],
+.kanzo-card[data-alert="red"] {
+  --card-alert: var(--c-crimson);
+  border-color: rgba(239, 68, 68, 0.3);
+  background: linear-gradient(90deg, rgba(239, 68, 68, 0.05) 0%, transparent 80%);
+}
+
+.kanzo-card[data-priority="high"],
+.kanzo-card[data-alert="amber"] {
+  --card-alert: var(--c-amber);
+  border-color: rgba(251, 146, 60, 0.3);
+  background: linear-gradient(90deg, rgba(251, 146, 60, 0.04) 0%, transparent 80%);
+}
+
+.kanzo-card[data-priority="threshold"],
+.kanzo-card[data-alert="gold"] {
+  --card-alert: var(--c-gold);
+  border-color: rgba(250, 204, 21, 0.3);
+}
+
+.kanzo-card[data-priority="normal"] {
+  --card-alert: var(--c-blue-cyan);
+}
+
+.kanzo-card[data-priority="low"] {
+  --card-alert: var(--c-lavender-dim);
+}
+
+.kanzo-card[data-alert="emerald"] {
+  --card-alert: var(--c-emerald);
+  border-color: rgba(16, 185, 129, 0.25);
+  background: linear-gradient(90deg, rgba(16, 185, 129, 0.03) 0%, transparent 80%);
+}
+
+/* Card Header Telemetry */
+.card-meta-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  margin-bottom: 6px;
+  color: var(--c-text-muted);
+}
+
+.card-id-tag {
+  color: var(--card-alert, var(--c-blue-cyan));
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+.card-stardate {
+  letter-spacing: 0.04em;
+  opacity: 0.7;
+}
+
+.card-title {
+  font-family: var(--font-lcars);
+  font-size: 1.05rem;
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--c-text-primary);
+  margin-bottom: 8px;
+  letter-spacing: 0.04em;
+}
+
+/* Razor Single-Pixel Spec Divider */
+.card-divider {
+  height: 1px;
+  background: var(--c-hairline-card);
+  margin: 8px 0;
+}
+
+/* Sub-data / Technical Payload */
+.card-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+}
+
+.card-tags {
+  display: flex;
+  gap: 4px;
+}
+
+.agent-badge {
+  padding: 1px 6px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--c-ice);
+  font-size: 0.6rem;
+}
+
+.agent-badge.badge-ai {
+  border-color: rgba(167, 139, 250, 0.4);
+  color: var(--c-lavender);
+}
+
+.card-status-glyph {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--card-alert, var(--c-text-muted));
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+/* Add Task Quick Bar */
+.add-task-btn {
+  width: 100%;
+  padding: 8px;
+  background: transparent;
+  border: 1px dashed var(--c-hairline);
+  color: var(--c-text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.add-task-btn:hover {
+  border-color: var(--col-accent, var(--c-blue-cyan));
+  color: var(--c-text-primary);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+/* Master Footer Rail */
+.lcars-bottom-rail {
+  display: grid;
+  grid-template-columns: 200px 1fr auto;
+  align-items: center;
+  gap: 16px;
+  height: 32px;
+  margin-top: auto;
+  border-top: 1px solid var(--c-hairline);
+  padding-top: 8px;
+}
+
+.bottom-terminal-tag {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--c-lavender);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.bottom-stream-stats {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--c-text-muted);
+  display: flex;
+  gap: 20px;
+}
+
+.stat-item span {
+  color: var(--c-blue-cyan);
+  font-weight: 700;
+}
+
+.stat-item.amber span {
+  color: var(--c-amber);
+}
+
+.stat-item.red span {
+  color: var(--c-crimson);
+}
+</style>
+</head>
+<body>
+<div class="telemetry-grid"></div>
+<div class="app-frame" data-agent="kanzo-workspace" data-version="2.4.1-skeletal">
+<!-- ======================================================================
+       HEADER: SKELETAL LCARS BOUNDARY RAIL & CONTROLS
+       ====================================================================== -->
+<header class="lcars-top-rail" data-agent="header-rail">
+<div class="brand-capsule">
+<div class="lcars-corner-block" data-agent="corner-anchor">LCARS</div>
+<div class="brand-info">
+<div class="brand-title">KANZO // TACTICAL</div>
+<div class="brand-meta">SYS-ID: 74205-NX // KANBAN SUBROUTINE</div>
+</div>
+</div>
+<div class="skeletal-bridge">
+<div class="bridge-line"></div>
+<div class="telemetry-pill-strip">
+<div class="tel-pill" data-agent="system-health">
+<span class="pulse-dot"></span>
+<span>DOM AGENT ACTIVE</span>
+</div>
+<div class="tel-pill">
+<span>MEM: 14.2%</span>
+</div>
+<div class="tel-pill">
+<span>THROUGHPUT: 98.4 T/S</span>
+</div>
+</div>
+</div>
+<div class="system-actions">
+<!-- Theme Switcher -->
+<div class="theme-switch-wrap" data-agent="theme-switcher">
+<button class="theme-tab active" id="btn-skeletal" onclick="switchTheme('skeletal')">SKELETAL</button>
+<button class="theme-tab" id="btn-classic" onclick="switchTheme('classic-lcars')">CLASSIC</button>
+</div>
+<button class="sys-btn accent-gold" data-agent="action-new-task" onclick="spawnAgentTask()">
+<span>+</span> NEW VECTOR
+      </button>
+<button class="sys-btn" data-agent="action-filter">
+<span>LOG</span>
+</button>
+</div>
+</header>
+<!-- ======================================================================
+       MAIN DUAL-AXIS WORKSPACE: SPINE NAV + HIGH-CHROMA VOID KANBAN
+       ====================================================================== -->
+<main class="lcars-core-body">
+<!-- LEFT SKELETAL LCARS SPINE -->
+<aside class="lcars-spine-rail" data-agent="spine-sidebar">
+<div class="spine-header-block">
+<span>OPERATIONS</span>
+<span style="font-size:0.75rem; font-family:var(--font-mono);">05</span>
+</div>
+<nav class="spine-nav-cluster">
+<a class="nav-link-row active" data-agent="nav-filter" data-filter="all" href="#all">
+<span>PRIMARY VECTOR</span>
+<span class="count">14</span>
+</a>
+<a class="nav-link-row" data-agent="nav-filter" data-filter="warp" href="#warp">
+<span>WARP CORE API</span>
+<span class="count">04</span>
+</a>
+<a class="nav-link-row" data-agent="nav-filter" data-filter="tactical" href="#tactical">
+<span>DEFLECTOR SHIELD</span>
+<span class="count">06</span>
+</a>
+<a class="nav-link-row" data-agent="nav-filter" data-filter="comms" href="#comms">
+<span>SUB-SPACE COMMS</span>
+<span class="count">02</span>
+</a>
+<a class="nav-link-row" data-agent="nav-filter" data-filter="agent" href="#agent">
+<span>AUTONOMOUS AGENTS</span>
+<span class="count">02</span>
+</a>
+</nav>
+<!-- Diagnostic Telemetry Spine Footing -->
+<div class="spine-metric-card" data-agent="spine-metrics">
+<div class="metric-title">DEFCON VELOCITY</div>
+<div class="metric-number">4.88</div>
+<div class="mini-graph">
+<div class="graph-bar" style="height: 30%"></div>
+<div class="graph-bar" style="height: 50%"></div>
+<div class="graph-bar" style="height: 40%"></div>
+<div class="graph-bar" style="height: 75%"></div>
+<div class="graph-bar highlight"></div>
+<div class="graph-bar" style="height: 60%"></div>
+</div>
+</div>
+</aside>
+<!-- KANBAN VOID WORKSPACE (5 Standard Kanban Columns) -->
+<section class="kanban-viewport" data-agent="kanban-board">
+<!-- COLUMN 1: BACKLOG -->
+<div class="kanban-col" data-agent="kanban-column" data-status="backlog">
+<header class="col-header">
+<div class="col-label-group">
+<span class="col-tag-id">SEC-01</span>
+<h2 class="col-name">Backlog</h2>
+</div>
+<span class="col-counter" data-agent="col-count">3</span>
+</header>
+<div class="task-stream" data-agent="task-stream" data-status="backlog">
+<article class="kanzo-card" data-agent="task-card" data-alert="blue" data-id="KZ-101" data-priority="normal" draggable="true">
+<div class="card-meta-bar">
+<span class="card-id-tag">KZ-101</span>
+<span class="card-stardate">SD 47634.1</span>
+</div>
+<div class="card-title">Refactor sub-space relay buffer allocations</div>
+<div class="card-divider"></div>
+<div class="card-footer">
+<div class="card-tags">
+<span class="agent-badge">SYS</span>
+<span class="agent-badge badge-ai">LLM-01</span>
+</div>
+<span class="card-status-glyph">READY</span>
+</div>
+</article>
+<article class="kanzo-card" data-agent="task-card" data-alert="lavender" data-id="KZ-102" data-priority="low" draggable="true">
+<div class="card-meta-bar">
+<span class="card-id-tag">KZ-102</span>
+<span class="card-stardate">SD 47634.4</span>
+</div>
+<div class="card-title">Update bio-neural gelpack telemetry charts</div>
+<div class="card-divider"></div>
+<div class="card-footer">
+<div class="card-tags">
+<span class="agent-badge">UI/UX</span>
+</div>
+<span class="card-status-glyph">STABLE</span>
+</div>
+</article>
+<article class="kanzo-card" data-agent="task-card" data-alert="blue" data-id="KZ-103" data-priority="normal" draggable="true">
+<div class="card-meta-bar">
+<span class="card-id-tag">KZ-103</span>
+<span class="card-stardate">SD 47635.0</span>
+</div>
+<div class="card-title">Isolate chroniton particle drift in sensor array</div>
+<div class="card-divider"></div>
+<div class="card-footer">
+<div class="card-tags">
+<span class="agent-badge">DEUTERIUM</span>
+</div>
+<span class="card-status-glyph">QUEUED</span>
+</div>
+</article>
+<button class="add-task-btn" data-agent="add-card-trigger" data-col="backlog">+ APPEND DIRECTIVE</button>
+</div>
+</div>
+<!-- COLUMN 2: TO-DO -->
+<div class="kanban-col" data-agent="kanban-column" data-status="todo">
+<header class="col-header">
+<div class="col-label-group">
+<span class="col-tag-id">SEC-02</span>
+<h2 class="col-name">To-Do</h2>
+</div>
+<span class="col-counter" data-agent="col-count">2</span>
+</header>
+<div class="task-stream" data-agent="task-stream" data-status="todo">
+<article class="kanzo-card" data-agent="task-card" data-alert="gold" data-id="KZ-104" data-priority="threshold" draggable="true">
+<div class="card-meta-bar">
+<span class="card-id-tag">KZ-104</span>
+<span class="card-stardate">SD 47636.8</span>
+</div>
+<div class="card-title">Re-align secondary dilithium articulation grid</div>
+<div class="card-divider"></div>
+<div class="card-footer">
+<div class="card-tags">
+<span class="agent-badge">WARP</span>
+<span class="agent-badge badge-ai">AUTO-AGENT</span>
+</div>
+<span class="card-status-glyph">PENDING</span>
+</div>
+</article>
+<article class="kanzo-card" data-agent="task-card" data-alert="blue" data-id="KZ-105" data-priority="normal" draggable="true">
+<div class="card-meta-bar">
+<span class="card-id-tag">KZ-105</span>
+<span class="card-stardate">SD 47637.2</span>
+</div>
+<div class="card-title">Standardize DOM attributes for downstream LLM scraper</div>
+<div class="card-divider"></div>
+<div class="card-footer">
+<div class="card-tags">
+<span class="agent-badge">DOM-CORE</span>
+</div>
+<span class="card-status-glyph">READY</span>
+</div>
+</article>
+<button class="add-task-btn" data-agent="add-card-trigger" data-col="todo">+ APPEND DIRECTIVE</button>
+</div>
+</div>
+<!-- COLUMN 3: IN PROGRESS (High Focus) -->
+<div class="kanban-col" data-agent="kanban-column" data-status="in-progress">
+<header class="col-header">
+<div class="col-label-group">
+<span class="col-tag-id">SEC-03</span>
+<h2 class="col-name">In Progress</h2>
+</div>
+<span class="col-counter" data-agent="col-count">3</span>
+</header>
+<div class="task-stream" data-agent="task-stream" data-status="in-progress">
+<!-- Alert Level: Red / Critical Task -->
+<article class="kanzo-card" data-agent="task-card" data-alert="red" data-id="KZ-106" data-priority="critical" draggable="true">
+<div class="card-meta-bar">
+<span class="card-id-tag">KZ-106 [CRITICAL]</span>
+<span class="card-stardate">SD 47638.1</span>
+</div>
+<div class="card-title">Mitigate antimatter containment boundary decay</div>
+<div class="card-divider"></div>
+<div class="card-footer">
+<div class="card-tags">
+<span class="agent-badge" style="border-color:var(--c-crimson); color:var(--c-crimson);">HAZARD</span>
+<span class="agent-badge badge-ai">CORE-AI</span>
+</div>
+<span class="card-status-glyph">LOCKOUT</span>
+</div>
+</article>
+<!-- Alert Level: Amber / Bottleneck -->
+<article class="kanzo-card" data-agent="task-card" data-alert="amber" data-id="KZ-107" data-priority="high" draggable="true">
+<div class="card-meta-bar">
+<span class="card-id-tag">KZ-107</span>
+<span class="card-stardate">SD 47638.5</span>
+</div>
+<div class="card-title">Optimize neural network latency in helm telemetry stream</div>
+<div class="card-divider"></div>
+<div class="card-footer">
+<div class="card-tags">
+<span class="agent-badge">PERF</span>
+</div>
+<span class="card-status-glyph">92% CAP</span>
+</div>
+</article>
+<article class="kanzo-card" data-agent="task-card" data-alert="blue" data-id="KZ-108" data-priority="normal" draggable="true">
+<div class="card-meta-bar">
+<span class="card-id-tag">KZ-108</span>
+<span class="card-stardate">SD 47639.0</span>
+</div>
+<div class="card-title">Verify zero-dependency skeletal CSS footprint</div>
+<div class="card-divider"></div>
+<div class="card-footer">
+<div class="card-tags">
+<span class="agent-badge">CSS-RAW</span>
+</div>
+<span class="card-status-glyph">ACTIVE</span>
+</div>
+</article>
+<button class="add-task-btn" data-agent="add-card-trigger" data-col="in-progress">+ APPEND DIRECTIVE</button>
+</div>
+</div>
+<!-- COLUMN 4: TESTING / VERIFICATION -->
+<div class="kanban-col" data-agent="kanban-column" data-status="testing">
+<header class="col-header">
+<div class="col-label-group">
+<span class="col-tag-id">SEC-04</span>
+<h2 class="col-name">Testing</h2>
+</div>
+<span class="col-counter" data-agent="col-count">2</span>
+</header>
+<div class="task-stream" data-agent="task-stream" data-status="testing">
+<article class="kanzo-card" data-agent="task-card" data-alert="amber" data-id="KZ-109" data-priority="high" draggable="true">
+<div class="card-meta-bar">
+<span class="card-id-tag">KZ-109</span>
+<span class="card-stardate">SD 47639.4</span>
+</div>
+<div class="card-title">Replicant load testing on phaser pulse capacitor</div>
+<div class="card-divider"></div>
+<div class="card-footer">
+<div class="card-tags">
+<span class="agent-badge">BENCH</span>
+<span class="agent-badge badge-ai">SIM-AGENT</span>
+</div>
+<span class="card-status-glyph">RUNNING</span>
+</div>
+</article>
+<article class="kanzo-card" data-agent="task-card" data-alert="blue" data-id="KZ-110" data-priority="normal" draggable="true">
+<div class="card-meta-bar">
+<span class="card-id-tag">KZ-110</span>
+<span class="card-stardate">SD 47639.7</span>
+</div>
+<div class="card-title">Simulate tachyon burst packet drop resistance</div>
+<div class="card-divider"></div>
+<div class="card-footer">
+<div class="card-tags">
+<span class="agent-badge">NET-TEST</span>
+</div>
+<span class="card-status-glyph">88% PASS</span>
+</div>
+</article>
+<button class="add-task-btn" data-agent="add-card-trigger" data-col="testing">+ APPEND DIRECTIVE</button>
+</div>
+</div>
+<!-- COLUMN 5: DONE / SHIPPED -->
+<div class="kanban-col" data-agent="kanban-column" data-status="done">
+<header class="col-header">
+<div class="col-label-group">
+<span class="col-tag-id">SEC-05</span>
+<h2 class="col-name">Done</h2>
+</div>
+<span class="col-counter" data-agent="col-count">4</span>
+</header>
+<div class="task-stream" data-agent="task-stream" data-status="done">
+<article class="kanzo-card" data-agent="task-card" data-alert="emerald" data-id="KZ-097" data-priority="normal" draggable="true">
+<div class="card-meta-bar">
+<span class="card-id-tag">KZ-097</span>
+<span class="card-stardate">SD 47631.9</span>
+</div>
+<div class="card-title">Initialize GitHub webhook synchronization</div>
+<div class="card-divider"></div>
+<div class="card-footer">
+<div class="card-tags">
+<span class="agent-badge">GIT</span>
+</div>
+<span class="card-status-glyph" style="color:var(--c-emerald)">RESOLVED</span>
+</div>
+</article>
+<article class="kanzo-card" data-agent="task-card" data-alert="emerald" data-id="KZ-098" data-priority="normal" draggable="true">
+<div class="card-meta-bar">
+<span class="card-id-tag">KZ-098</span>
+<span class="card-stardate">SD 47632.4</span>
+</div>
+<div class="card-title">Purge legacy jQuery &amp; bloated UI dependencies</div>
+<div class="card-divider"></div>
+<div class="card-footer">
+<div class="card-tags">
+<span class="agent-badge">CLEANUP</span>
+</div>
+<span class="card-status-glyph" style="color:var(--c-emerald)">RESOLVED</span>
+</div>
+</article>
+<article class="kanzo-card" data-agent="task-card" data-alert="emerald" data-id="KZ-099" data-priority="normal" draggable="true">
+<div class="card-meta-bar">
+<span class="card-id-tag">KZ-099</span>
+<span class="card-stardate">SD 47633.2</span>
+</div>
+<div class="card-title">Establish single-pixel razor hairline baseline rules</div>
+<div class="card-divider"></div>
+<div class="card-footer">
+<div class="card-tags">
+<span class="agent-badge">DESIGN</span>
+</div>
+<span class="card-status-glyph" style="color:var(--c-emerald)">RESOLVED</span>
+</div>
+</article>
+<article class="kanzo-card" data-agent="task-card" data-alert="emerald" data-id="KZ-100" data-priority="normal" draggable="true">
+<div class="card-meta-bar">
+<span class="card-id-tag">KZ-100</span>
+<span class="card-stardate">SD 47633.8</span>
+</div>
+<div class="card-title">Implement theme switcher sub-routine (Skeletal / Classic)</div>
+<div class="card-divider"></div>
+<div class="card-footer">
+<div class="card-tags">
+<span class="agent-badge">THEME</span>
+</div>
+<span class="card-status-glyph" style="color:var(--c-emerald)">RESOLVED</span>
+</div>
+</article>
+<button class="add-task-btn" data-agent="add-card-trigger" data-col="done">+ APPEND DIRECTIVE</button>
+</div>
+</div>
+</section>
+</main>
+<!-- ======================================================================
+       BOTTOM TELEMETRY RAIL: TERMINAL SYNC & STREAM METRICS
+       ====================================================================== -->
+<footer class="lcars-bottom-rail" data-agent="footer-rail">
+<div class="bottom-terminal-tag">
+<span>● LCARS.SYS.ONLINE</span>
+<span>|</span>
+<span>KANZO v2.4</span>
+</div>
+<div class="bottom-stream-stats">
+<div class="stat-item">BACKLOG: <span id="stat-backlog">03</span></div>
+<div class="stat-item">IN-FLIGHT: <span id="stat-inflight">05</span></div>
+<div class="stat-item amber">ELEVATED: <span id="stat-elevated">02</span></div>
+<div class="stat-item red">CRITICAL-BREACH: <span id="stat-critical">01</span></div>
+<div class="stat-item">COMPLETED: <span id="stat-completed">04</span></div>
+</div>
+<div style="font-family: var(--font-mono); font-size: 0.65rem; color: var(--c-lavender);">
+      FEDERATION STANDARD ENCODING // UTF-8
+    </div>
+</footer>
+</div>
+<!-- Embedded Native Drag/Sort & Theme Logic (Zero Dependencies) -->
+<script>
+  // Theme Switcher Logic
+  function switchTheme(themeName) {
+    document.documentElement.setAttribute('data-theme', themeName);
+    document.querySelectorAll('.theme-tab').forEach(el => el.classList.remove('active'));
+    if (themeName === 'skeletal') {
+      document.getElementById('btn-skeletal')?.classList.add('active');
+    } else {
+      document.getElementById('btn-classic')?.classList.add('active');
+    }
+  }
+
+  // ==========================================================================
+  // NATIVE HTML5 DRAG & DROP CARD REORDERING ENGINE
+  // ==========================================================================
+  let draggedCard = null;
+  let dropPlaceholder = null;
+
+  // Initialize placeholder element
+  function getOrCreatePlaceholder() {
+    if (!dropPlaceholder) {
+      dropPlaceholder = document.createElement('div');
+      dropPlaceholder.className = 'card-drop-placeholder';
+    }
+    return dropPlaceholder;
+  }
+
+  // Update Counters & Telemetry across all columns
+  function updateColumnCounters() {
+    let backlogCount = 0;
+    let todoCount = 0;
+    let inProgressCount = 0;
+    let testingCount = 0;
+    let doneCount = 0;
+
+    document.querySelectorAll('.kanban-col').forEach(col => {
+      const status = col.getAttribute('data-status');
+      const stream = col.querySelector('.task-stream');
+      const cards = stream ? stream.querySelectorAll('.kanzo-card') : [];
+      const counter = col.querySelector('[data-agent="col-count"]');
+      if (counter) {
+        counter.textContent = cards.length;
+      }
+
+      if (status === 'backlog') backlogCount = cards.length;
+      if (status === 'todo') todoCount = cards.length;
+      if (status === 'in-progress') inProgressCount = cards.length;
+      if (status === 'testing') testingCount = cards.length;
+      if (status === 'done') doneCount = cards.length;
+    });
+
+    // Update bottom rail telemetry
+    const backlogEl = document.getElementById('stat-backlog');
+    if (backlogEl) backlogEl.textContent = String(backlogCount).padStart(2, '0');
+
+    const inFlightEl = document.getElementById('stat-inflight');
+    if (inFlightEl) inFlightEl.textContent = String(todoCount + inProgressCount).padStart(2, '0');
+
+    const completedEl = document.getElementById('stat-completed');
+    if (completedEl) completedEl.textContent = String(doneCount).padStart(2, '0');
+
+    // Count elevated/critical
+    const criticalCount = document.querySelectorAll('.kanzo-card[data-priority="critical"], .kanzo-card[data-alert="red"]').length;
+    const elevatedCount = document.querySelectorAll('.kanzo-card[data-priority="high"], .kanzo-card[data-alert="amber"]').length;
+    
+    const critEl = document.getElementById('stat-critical');
+    if (critEl) critEl.textContent = String(criticalCount).padStart(2, '0');
+
+    const elevEl = document.getElementById('stat-elevated');
+    if (elevEl) elevEl.textContent = String(elevatedCount).padStart(2, '0');
+  }
+
+  // Calculate nearest card element based on cursor vertical position
+  function getDragAfterElement(container, y) {
+    const draggableElements = [...container.querySelectorAll('.kanzo-card:not(.is-dragging)')];
+
+    return draggableElements.reduce((closest, child) => {
+      const box = child.getBoundingClientRect();
+      const offset = y - box.top - box.height / 2;
+      if (offset < 0 && offset > closest.offset) {
+        return { offset: offset, element: child };
+      } else {
+        return closest;
+      }
+    }, { offset: Number.NEGATIVE_INFINITY }).element;
+  }
+
+  // Bind native drag events to a card
+  function attachDragEvents(card) {
+    card.setAttribute('draggable', 'true');
+
+    card.addEventListener('dragstart', (e) => {
+      draggedCard = card;
+      card.classList.add('is-dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', card.getAttribute('data-id') || '');
+      
+      // Delay placeholder creation slightly so ghost image isn't affected
+      setTimeout(() => {
+        const placeholder = getOrCreatePlaceholder();
+        if (card.parentNode) {
+          card.parentNode.insertBefore(placeholder, card.nextSibling);
+        }
+      }, 0);
+    });
+
+    card.addEventListener('dragend', () => {
+      card.classList.remove('is-dragging');
+      
+      if (dropPlaceholder && dropPlaceholder.parentNode) {
+        dropPlaceholder.parentNode.removeChild(dropPlaceholder);
+      }
+
+      document.querySelectorAll('.task-stream').forEach(stream => {
+        stream.classList.remove('drag-target');
+      });
+
+      draggedCard = null;
+      updateColumnCounters();
+    });
+  }
+
+  // Setup column drop targets
+  function setupDropZones() {
+    const streams = document.querySelectorAll('.task-stream');
+
+    streams.forEach(stream => {
+      stream.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        stream.classList.add('drag-target');
+
+        const placeholder = getOrCreatePlaceholder();
+        const afterElement = getDragAfterElement(stream, e.clientY);
+        const addBtn = stream.querySelector('.add-task-btn');
+
+        if (afterElement) {
+          stream.insertBefore(placeholder, afterElement);
+        } else if (addBtn) {
+          stream.insertBefore(placeholder, addBtn);
+        } else {
+          stream.appendChild(placeholder);
+        }
+      });
+
+      stream.addEventListener('dragleave', (e) => {
+        // If relatedTarget is outside this stream, remove highlight
+        if (!stream.contains(e.relatedTarget)) {
+          stream.classList.remove('drag-target');
+        }
+      });
+
+      stream.addEventListener('drop', (e) => {
+        e.preventDefault();
+        stream.classList.remove('drag-target');
+
+        const placeholder = getOrCreatePlaceholder();
+        if (draggedCard && placeholder.parentNode === stream) {
+          // Update status if moved to Done
+          const colStatus = stream.getAttribute('data-status');
+          if (colStatus === 'done') {
+            const glyph = draggedCard.querySelector('.card-status-glyph');
+            if (glyph) {
+              glyph.textContent = 'RESOLVED';
+              glyph.style.color = 'var(--c-emerald)';
+            }
+          }
+
+          // Insert dragged card into resolved placeholder location
+          stream.insertBefore(draggedCard, placeholder);
+          
+          // Audio-visual LCARS pulse animation
+          draggedCard.classList.remove('just-dropped');
+          // Force layout reflow to replay CSS keyframe
+          void draggedCard.offsetWidth;
+          draggedCard.classList.add('just-dropped');
+
+          setTimeout(() => {
+            if (draggedCard) draggedCard.classList.remove('just-dropped');
+          }, 700);
+        }
+
+        if (placeholder.parentNode) {
+          placeholder.parentNode.removeChild(placeholder);
+        }
+
+        updateColumnCounters();
+      });
+    });
+  }
+
+  // Initialize all existing cards with DnD handlers on load
+  document.addEventListener('DOMContentLoaded', () => {
+    document.querySelectorAll('.kanzo-card').forEach(attachDragEvents);
+    setupDropZones();
+    updateColumnCounters();
+  });
+
+  // Fallback initial invocation in case DOMContentLoaded already fired
+  if (document.readyState === 'interactive' || document.readyState === 'complete') {
+    document.querySelectorAll('.kanzo-card').forEach(attachDragEvents);
+    setupDropZones();
+    updateColumnCounters();
+  }
+
+  // Quick Task Generator for AI Operator Testing
+  function spawnAgentTask() {
+    const todoStream = document.querySelector('[data-status="todo"] .task-stream');
+    if (!todoStream) return;
+    
+    const idNum = Math.floor(100 + Math.random() * 900);
+    const card = document.createElement('article');
+    card.className = 'kanzo-card';
+    card.setAttribute('draggable', 'true');
+    card.setAttribute('data-agent', 'task-card');
+    card.setAttribute('data-id', `KZ-${idNum}`);
+    card.setAttribute('data-priority', 'normal');
+    card.setAttribute('data-alert', 'blue');
+    
+    card.innerHTML = `
+      <div class="card-meta-bar">
+        <span class="card-id-tag">KZ-${idNum}</span>
+        <span class="card-stardate">SD 47640.2</span>
+      </div>
+      <div class="card-title">Autonomous directive injected via DOM Agent interface</div>
+      <div class="card-divider"></div>
+      <div class="card-footer">
+        <div class="card-tags">
+          <span class="agent-badge badge-ai">SYNTH</span>
+        </div>
+        <span class="card-status-glyph">LIVE</span>
+      </div>
+    `;
+    
+    const trigger = todoStream.querySelector('.add-task-btn');
+    todoStream.insertBefore(card, trigger);
+    
+    // Attach draggable handlers to freshly generated card
+    attachDragEvents(card);
+    
+    // Animate newly spawned card
+    card.classList.add('just-dropped');
+    setTimeout(() => card.classList.remove('just-dropped'), 700);
+    
+    // Update counters
+    updateColumnCounters();
+  }
+</script>
+</body></html>

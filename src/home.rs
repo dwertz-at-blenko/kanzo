@@ -33,9 +33,11 @@ mcp_http = true
 # http://<listen>:<port>. Leave it out when the board is only local.
 # url = "https://kanzo.example.com"
 
-# How the board looks: "kanzo" (the default) or "lcars", a Star Trek style
-# computer display. A visit to /?theme=kanzo or /?theme=lcars overrides it.
-# theme = "lcars"
+# The board's look until one is picked in Settings or in the switcher at the
+# bottom of the sidebar: "kanzo" (the stock look), "lcars" or "skeletal".
+# The pick is kept in the database, so it holds for every browser; this is
+# only the starting point. "/?theme=lcars" previews a look for one visit.
+theme = "kanzo"
 "#;
 
 const GITIGNORE: &str = "\
@@ -66,24 +68,8 @@ pub struct Config {
     pub mcp_http: bool,
     /// Where a reverse proxy serves the board, like `https://kanzo.example.com`.
     pub url: Option<String>,
-    /// The board's look: `kanzo` (default) or `lcars`.
+    /// The look the board starts with, until one is picked on the board itself.
     pub theme: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Theme {
-    Kanzo,
-    Lcars,
-}
-
-impl Theme {
-    pub fn parse(name: &str) -> Option<Self> {
-        match name.trim().to_ascii_lowercase().as_str() {
-            "kanzo" => Some(Self::Kanzo),
-            "lcars" => Some(Self::Lcars),
-            _ => None,
-        }
-    }
 }
 
 impl Default for Config {
@@ -111,13 +97,39 @@ impl Config {
         }
     }
 
+    /// The theme named in config.toml, Kanzo's own look when there is none.
     pub fn theme(&self) -> Result<Theme> {
-        match self.theme.as_deref() {
+        match &self.theme {
             None => Ok(Theme::Kanzo),
-            Some(name) => {
-                Theme::parse(name).with_context(|| format!("theme = {name:?} must be \"kanzo\" or \"lcars\""))
-            }
+            Some(name) => Theme::parse(name)
+                .with_context(|| format!("theme = {name:?} in config.toml is not one of {}", Theme::NAMES.join(", "))),
         }
+    }
+}
+
+/// A look for the board. Every theme's CSS sits under `html[data-theme="<name>"]`,
+/// so switching is one attribute, and every stylesheet can be loaded at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Theme {
+    /// The stock look, light and dark.
+    Kanzo,
+    /// LCARS: the Starfleet terminal in its classic palette.
+    Lcars,
+    /// Skeletal LCARS: the dark, hairline, high-chroma layout designed in Google Stitch.
+    Skeletal,
+}
+
+impl Theme {
+    pub const ALL: [Theme; 3] = [Theme::Kanzo, Theme::Lcars, Theme::Skeletal];
+    pub const NAMES: [&'static str; 3] = ["kanzo", "lcars", "skeletal"];
+
+    pub fn parse(name: &str) -> Option<Theme> {
+        Self::ALL.into_iter().find(|t| t.name().eq_ignore_ascii_case(name.trim()))
+    }
+
+    /// The name used in config.toml, in `data-theme` and in the settings API.
+    pub fn name(self) -> &'static str {
+        Self::NAMES[self as usize]
     }
 }
 
@@ -151,6 +163,7 @@ impl Home {
         config.public_url().with_context(|| format!("{} is not valid", path.display()))?;
         config.theme().with_context(|| format!("{} is not valid", path.display()))?;
 
+        config.theme()?;
         let home = Self { dir, config };
         home.store()?.migrate()?;
         Ok(home)
@@ -305,6 +318,28 @@ mod tests {
         assert_eq!(home.config.port, DEFAULT_PORT);
         assert!(home.config.mcp_http);
         assert!(home.config.listen.is_loopback());
+    }
+
+    #[test]
+    fn theme_comes_from_config_and_is_checked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = Home::open(tmp.path().to_path_buf()).unwrap();
+        assert_eq!(home.config.theme().unwrap(), Theme::Kanzo);
+
+        fs::write(tmp.path().join("config.toml"), "theme = \"Skeletal\"\n").unwrap();
+        let home = Home::open(tmp.path().to_path_buf()).unwrap();
+        assert_eq!(home.config.theme().unwrap(), Theme::Skeletal);
+
+        fs::write(tmp.path().join("config.toml"), "theme = \"neon\"\n").unwrap();
+        let err = Home::open(tmp.path().to_path_buf()).unwrap_err();
+        assert!(format!("{err:#}").contains("kanzo, lcars, skeletal"), "{err:#}");
+
+        for (name, theme) in Theme::NAMES.iter().zip(Theme::ALL) {
+            assert_eq!(Theme::parse(name), Some(theme));
+            assert_eq!(theme.name(), *name);
+        }
+        assert_eq!(Theme::parse(" LCARS "), Some(Theme::Lcars));
+        assert_eq!(Theme::parse(""), None);
     }
 
     #[test]
