@@ -468,6 +468,15 @@ label.setting { cursor: pointer; }
 .theme-tab:hover, .theme-tab:focus-visible { color: var(--text); }
 .theme-tab[aria-pressed="true"] { background: var(--bg); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.08); }
 .theme-version { color: var(--faint); font-size: 11px; text-align: right; font-variant-numeric: tabular-nums; }
+/* Warp stars (stars.js): one faint canvas behind the board. */
+#stars { position: fixed; inset: 0; width: 100%; height: 100%; z-index: -1; pointer-events: none; opacity: .5; }
+.theme-tab.help { flex: none; }
+.howto summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.howto summary:hover, .howto[open] summary { color: var(--text); }
+.howto ol { margin: 10px 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
+.howto a { color: var(--link); }
+.howto code { padding: 1px 5px; border-radius: 4px; background: var(--code); font-size: 12px; }
+.settings-pane .howto p { font-size: 13px; }
 [hidden] { display: none !important; }
 
 @media (max-width: 700px) {
@@ -502,6 +511,10 @@ label.setting { cursor: pointer; }
   <button class="ghost" id="settings" aria-haspopup="menu"><span class="icon" data-icon="settings"></span>Settings</button>
   <div class="theme-bar" id="theme-bar" data-agent="theme-switcher">
     <div class="theme-tabs" role="group" aria-label="Theme" id="theme-tabs"></div>
+    <div class="theme-tabs" role="group" aria-label="Background">
+      <button class="theme-tab" type="button" id="stars-toggle" aria-pressed="false" title="Moving stars behind the board, in this browser">Warp stars</button>
+      <button class="theme-tab help" type="button" id="stars-help" title="How to get the stars on the sign-in page too" aria-label="Stars at sign-in: how to">?</button>
+    </div>
     <div class="theme-version" id="theme-version"></div>
   </div>
 </aside>
@@ -576,6 +589,19 @@ label.setting { cursor: pointer; }
           <span class="text">Theme<span>The look of the board, in every browser that opens it</span></span>
           <select class="field" id="settings-theme" aria-label="Theme"></select>
         </label>
+        <label class="setting">
+          <span class="text">Warp stars<span>Moving stars behind the board, in this browser only</span></span>
+          <span class="switch"><input type="checkbox" id="settings-stars" aria-label="Warp stars"><span></span></span>
+        </label>
+        <details class="howto" id="stars-howto">
+          <summary>Stars at sign-in too: how to add them</summary>
+          <ol>
+            <li><a href="/warp-addon.zip" download>Download the add-on</a> and unzip it.</li>
+            <li>Open <code>chrome://extensions</code> and turn on Developer mode (top right).</li>
+            <li>Click Load unpacked and pick the <code>kanzo-warp-addon</code> folder.</li>
+          </ol>
+          <p>For Chrome, Edge, Brave and Comet. It draws stars behind the Kanzo sign-in page in your browser and nothing else: no permissions, nothing read or sent. Remove it on the same page.</p>
+        </details>
         <h3>Task properties</h3>
         <p>Turn one off to hide it on the board and leave it out of what agents get. Nothing is deleted.</p>
       </section>
@@ -641,6 +667,7 @@ label.setting { cursor: pointer; }
 
 <div class="offline" id="offline" hidden>Board not reachable — is kanzo running?</div>
 
+<script src="/stars.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

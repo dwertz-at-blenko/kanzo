@@ -1506,6 +1506,23 @@ $("#settings-theme").replaceChildren(...THEMES.map(([id, name]) => el("option", 
 $("#settings-theme").addEventListener("change", (e) => setTheme(e.target.value));
 showTheme(currentTheme());
 
+// Warp stars: a per-browser switch. stars.js owns the canvas and the saved pick; the pill
+// in the sidebar and the switch in Settings both flip it, and "?" opens the sign-in how-to.
+function setStars(on) {
+  if (on !== undefined) window.kanzoStars?.set(on);
+  const now = window.kanzoStars?.on ?? false;
+  $("#stars-toggle").setAttribute("aria-pressed", String(now));
+  $("#settings-stars").checked = now;
+}
+$("#stars-toggle").addEventListener("click", () => setStars(!window.kanzoStars?.on));
+$("#settings-stars").addEventListener("change", (e) => setStars(e.target.checked));
+$("#stars-help").addEventListener("click", () => {
+  openSettings();
+  $("#stars-howto").open = true;
+  $("#stars-howto").scrollIntoView({ block: "nearest" });
+});
+setStars();
+
 function toggleSettingsMenu() {
   if (!state.board || !toggleMenu("settings")) return;
   const button = $("#settings");

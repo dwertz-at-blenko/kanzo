@@ -27,6 +27,11 @@ const APP_JS: &str = include_str!("app.js");
 const LOGO: &[u8] = include_bytes!("logo.png");
 /// Applies `/?theme=` before first paint; the page already carries the board's saved theme.
 const THEME_JS: &str = include_str!("theme.js");
+/// Warp stars behind the board, a per-browser switch (localStorage `kanzo.stars`).
+const STARS_JS: &str = include_str!("stars.js");
+/// The browser add-on that draws the same stars behind the sign-in page: `deploy/warp-addon`,
+/// zipped by `deploy/warp-addon/zip.py` (a test checks it is current).
+const WARP_ADDON: &[u8] = include_bytes!("warp-addon.zip");
 /// The LCARS theme, every rule under `html[data-theme="lcars"]`.
 const LCARS_CSS: &str = include_str!("lcars.css");
 /// The Skeletal LCARS theme, every rule under `html[data-theme="skeletal"]`.
@@ -183,6 +188,19 @@ fn router(home: Home, guard: Arc<Guard>, shutdown: CancellationToken) -> Router 
         .route("/", get(index))
         .route("/app.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], APP_JS) }))
         .route("/theme.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], THEME_JS) }))
+        .route("/stars.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], STARS_JS) }))
+        .route(
+            "/warp-addon.zip",
+            get(|| async {
+                (
+                    [
+                        (header::CONTENT_TYPE, "application/zip"),
+                        (header::CONTENT_DISPOSITION, "attachment; filename=\"kanzo-warp-addon.zip\""),
+                    ],
+                    WARP_ADDON,
+                )
+            }),
+        )
         .route("/lcars.css", get(|| async { ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], LCARS_CSS) }))
         .route("/skeletal.css", get(|| async { ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], SKELETAL_CSS) }))
         .route("/fonts/antonio.woff2", get(|| async { ([(header::CONTENT_TYPE, "font/woff2")], ANTONIO) }))
@@ -892,7 +910,7 @@ mod tests {
             assert!(page.contains(&format!("<meta name=\"kanzo-version\" content=\"{}\">", update::CURRENT)));
             assert!(page.contains(&format!("<meta name=\"kanzo-themes\" content=\"kanzo lcars={LCARS_VERSION} skeletal={SKELETAL_VERSION}\">\n</head>")));
         }
-        for file in ["/theme.js", "/lcars.css", "/skeletal.css"] {
+        for file in ["/theme.js", "/lcars.css", "/skeletal.css", "/stars.js", "/warp-addon.zip"] {
             assert!(INDEX.contains(&format!("\"{file}\"")), "index.html should load {file}");
         }
         assert!(!INDEX.contains("data-theme="), "the server adds data-theme");
@@ -903,6 +921,20 @@ mod tests {
             assert!(css.contains(&format!("--theme-version: \"{version}\"")), "{name}: --theme-version");
         }
         assert!(CSP.contains("font-src 'self'"), "the themes load Antonio from this server");
+    }
+
+    /// The zip the board hands out is stored, not compressed, so it holds each add-on file
+    /// byte for byte; a change in `deploy/warp-addon` without `zip.py` fails here.
+    #[test]
+    fn the_addon_zip_is_current() {
+        let files: [(&str, &[u8]); 3] = [
+            ("manifest.json", include_bytes!("../deploy/warp-addon/manifest.json")),
+            ("stars.css", include_bytes!("../deploy/warp-addon/stars.css")),
+            ("stars.js", include_bytes!("../deploy/warp-addon/stars.js")),
+        ];
+        for (name, bytes) in files {
+            assert!(WARP_ADDON.windows(bytes.len()).any(|w| w == bytes), "{name}: run deploy/warp-addon/zip.py");
+        }
     }
 
     #[test]
