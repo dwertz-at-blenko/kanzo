@@ -170,6 +170,7 @@ fn router(home: Home, guard: Arc<Guard>, shutdown: CancellationToken) -> Router 
         .route("/api/changes", get(changes))
         .route("/api/board", get(board))
         .route("/api/search", get(search))
+        .route("/api/activity", get(activity))
         .route("/api/projects", post(create_project))
         .route("/api/projects/{slug}", patch(update_project).delete(delete_project))
         .route("/api/projects/{slug}/repos", post(link_repo).delete(unlink_repo))
@@ -427,7 +428,7 @@ async fn with_store<T: Serialize + Send + 'static>(
     home: Arc<Home>,
     f: impl FnOnce(&Home, &Store) -> store::Result<T> + Send + 'static,
 ) -> Response {
-    let error = match blocking(move || f(&home, &home.store()?)).await {
+    let error = match blocking(move || f(&home, &home.store()?.acting("board"))).await {
         Ok(Ok(v)) => return Json(v).into_response(),
         Ok(Err(e)) => e,
         Err(e) => return e.into_response(),
@@ -529,6 +530,22 @@ async fn board(State(home): Shared, Query(q): Query<BoardQuery>) -> Response {
 struct SearchQuery {
     #[serde(default)]
     q: String,
+}
+
+#[derive(Deserialize)]
+struct ActivityQuery {
+    /// The id of the oldest row already shown; the page continues before it.
+    before: Option<i64>,
+    #[serde(default)]
+    project: String,
+}
+
+/// One page of the activity log, newest first, for one project or (`all`, or none) for all.
+async fn activity(State(home): Shared, Query(q): Query<ActivityQuery>) -> Response {
+    with_store(home, move |_, s| {
+        s.list_activity(q.before, Some(q.project.as_str()).filter(|p| !p.is_empty() && *p != "all"))
+    })
+    .await
 }
 
 async fn search(State(home): Shared, Query(q): Query<SearchQuery>) -> Response {

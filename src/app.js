@@ -91,6 +91,7 @@ const ICONS = {
   settings: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
   send: '<path d="M12 19V5M5 12l7-7 7 7"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/>',
+  activity: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   comment: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
   share: '<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"/>',
 };
@@ -1570,8 +1571,77 @@ $("#settings-nav").addEventListener("click", (e) => {
   if (b) showSection(b.dataset.section);
 });
 $("#settings-close").addEventListener("click", closeSettings);
+// The activity log: every task created, moved, edited or deleted, every comment and project,
+// newest first, a page at a time. The server writes it (src/activity.sql); this only reads.
+const activity = { rows: [], more: false, busy: false };
+const ACTIVITY_VERBS = {
+  created: "created", moved: "moved", edited: "edited", deleted: "deleted", commented: "commented on",
+  "comment deleted": "deleted a comment on", "project created": "created project", "project deleted": "deleted project",
+};
+
+async function loadActivity(reset) {
+  if (activity.busy) return;
+  activity.busy = true;
+  if (reset) { activity.rows = []; activity.more = false; }
+  const last = activity.rows.at(-1);
+  try {
+    const rows = await api("GET", "/activity?project=" + encodeURIComponent($("#activity-scope").value)
+      + (last ? "&before=" + last.id : ""));
+    activity.rows.push(...rows);
+    activity.more = rows.length === 100;
+  } catch (err) { toast(err.message); }
+  activity.busy = false;
+  renderActivity();
+}
+
+function renderActivity() {
+  const list = $("#activity-list"), out = [];
+  let day = "";
+  for (const a of activity.rows) {
+    const at = parseTime(a.at), d = at.toLocaleDateString(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+    if (d !== day) { day = d; out.push(el("h3", { class: "activity-day" }, d)); }
+    const name = a.task_id ? `${a.project || "?"}#${a.task_id} ${a.title}` : a.project || a.title;
+    // A task that is gone cannot be opened; its row keeps the name it had.
+    const task = a.task_id && a.action !== "deleted"
+      ? el("button", { class: "task", type: "button", onclick: () => openFromActivity(a) }, name)
+      : el("span", { class: "task" }, name);
+    out.push(el("div", { class: "activity-row", "data-action": a.action },
+      el("time", { datetime: a.at, title: at.toLocaleString() }, at.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })),
+      el("div", {}, el("span", { class: "who" }, `${a.actor || "unknown"} ${ACTIVITY_VERBS[a.action] || a.action} `), task,
+        a.detail ? el("span", { class: "detail", title: a.detail }, a.detail) : null)));
+  }
+  if (!activity.rows.length) out.push(el("p", {}, activity.busy ? "Loading" : "Nothing has happened here yet."));
+  if (activity.more) out.push(el("button", { class: "btn", type: "button", onclick: () => loadActivity(false) }, "Show earlier"));
+  list.replaceChildren(...out);
+}
+
+function openFromActivity(a) {
+  closeActivity();
+  if (state.project !== "all" && state.project !== a.project) setProject(a.project);
+  openTask(a.task_id);
+}
+
+function openActivity() {
+  closeMenu();
+  const here = state.project !== "all" ? state.project : null;
+  $("#activity-scope").replaceChildren(el("option", { value: "all" }, "All projects"),
+    ...(here ? [el("option", { value: here }, here)] : []));
+  $("#activity-scope").value = here || "all";
+  $("#activity-dialog").hidden = false;
+  $("#activity-close").focus();
+  loadActivity(true);
+}
+
+function closeActivity() {
+  $("#activity-dialog").hidden = true;
+}
+
+$("#activity-open").addEventListener("click", openActivity);
+$("#activity-close").addEventListener("click", closeActivity);
+$("#activity-scope").addEventListener("change", () => loadActivity(true));
+
 for (const [dialog, close] of [[$("#project-dialog"), hideNewProject], [$("#search-dialog"), closeSearch],
-                               [$("#settings-dialog"), closeSettings]]) {
+                               [$("#settings-dialog"), closeSettings], [$("#activity-dialog"), closeActivity]]) {
   dialog.addEventListener("mousedown", (e) => { if (e.target === dialog) close(); });
   dialog.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); close(); } });
 }
