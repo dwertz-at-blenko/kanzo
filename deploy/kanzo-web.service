@@ -21,7 +21,9 @@ Environment=KANZO_HOME=/home/claude/.local/share/kanzo
 # upstream's binary, which 403s behind the tunnel, so point the release check at nothing.
 # Updating = pull upstream into the branch, cargo build --release, systemctl --user restart kanzo-web.
 Environment=KANZO_RELEASES_URL=http://127.0.0.1:9
-ExecStart=/home/claude/dev/kanzo/target/release/kanzo --no-open --home /home/claude/.local/share/kanzo
+# run-kanzo.sh starts kanzo under the vault runner so /mcp-remote gets its bearer; the board
+# still starts, with that route off, when the vault cannot be reached.
+ExecStart=/home/claude/dev/kanzo/deploy/run-kanzo.sh
 Restart=always
 RestartSec=3
 
