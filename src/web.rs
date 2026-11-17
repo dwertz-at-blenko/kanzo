@@ -39,6 +39,10 @@ const LCARS_VERSION: &str = "0.2";
 const SKELETAL_VERSION: &str = "0.1";
 
 /// Scripts only from this server, so even a bug in the Markdown renderer cannot run injected script.
+/// Turns on `/mcp-remote` when set: MCP for agents outside this machine (a claude.ai connector
+/// through a reverse proxy), which must send `Authorization: Bearer <value>`. Never a file.
+const REMOTE_BEARER: &str = "KANZO_REMOTE_BEARER";
+
 const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; \
                    font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
@@ -75,12 +79,16 @@ pub async fn serve(home: Home, open: bool) -> Result<()> {
     if home.config.mcp_http {
         println!("MCP over HTTP at {url}/mcp");
     }
+    let remote = std::env::var(REMOTE_BEARER).ok().filter(|v| !v.trim().is_empty());
+    if remote.is_some() {
+        println!("MCP for remote agents at {url}/mcp-remote, with the bearer in {REMOTE_BEARER}");
+    }
     if open {
         open_browser(&url);
     }
     // Cancelling this also ends open MCP streams, which would otherwise hold up shutdown.
     let shutdown = CancellationToken::new();
-    let app = router(home.clone(), guard.clone(), shutdown.clone());
+    let app = router(home.clone(), guard.clone(), shutdown.clone(), remote);
     let serve = |listener, stop: CancellationToken| {
         let app = app.clone().into_make_service_with_connect_info::<SocketAddr>();
         tokio::spawn(
@@ -155,10 +163,17 @@ async fn stop_signal() {
     }
 }
 
-fn router(home: Home, guard: Arc<Guard>, shutdown: CancellationToken) -> Router {
+fn router(home: Home, guard: Arc<Guard>, shutdown: CancellationToken, remote: Option<String>) -> Router {
     let mut shared = Router::new();
     if home.config.mcp_http {
-        shared = shared.nest_service("/mcp", crate::mcp::http_service(home.clone(), shutdown));
+        shared = shared.nest_service("/mcp", crate::mcp::http_service(home.clone(), shutdown.clone()));
+    }
+    // Not forwarded when this board joins another: the bearer is this board's.
+    let mut own = Router::new();
+    if let Some(bearer) = remote {
+        own = own
+            .nest_service("/mcp-remote", crate::mcp::remote_service(home.clone(), shutdown))
+            .layer(middleware::from_fn_with_state(Arc::<str>::from(bearer.trim()), bearer_only));
     }
     let shared = shared
         .route("/images/{file}", get(image_file))
@@ -191,6 +206,7 @@ fn router(home: Home, guard: Arc<Guard>, shutdown: CancellationToken) -> Router 
         .route("/api/update", get(update_status).post(update_now))
         .route("/api/network", get(network).post(change_network).route_layer(middleware::from_fn(this_computer)))
         .merge(shared)
+        .merge(own)
         .layer(Extension(guard.clone()))
         .layer(middleware::from_fn_with_state(guard, protect))
         .with_state(Arc::new(home))
@@ -364,6 +380,27 @@ async fn this_computer(req: Request, next: Next) -> Response {
     match guest(&req) {
         Some(_) => (StatusCode::FORBIDDEN, "only the computer with the board can change its network").into_response(),
         None => next.run(req).await,
+    }
+}
+
+/// One `Authorization: Bearer <token>` header, compared in constant time; anything else is 401.
+async fn bearer_only(State(expected): State<Arc<str>>, req: Request, next: Next) -> Response {
+    let mut values = req.headers().get_all(header::AUTHORIZATION).iter();
+    let token = match (values.next(), values.next()) {
+        (Some(v), None) => {
+            let v = v.as_bytes().trim_ascii();
+            v.get(..7).filter(|s| s.eq_ignore_ascii_case(b"bearer ")).map(|_| v[7..].trim_ascii())
+        }
+        _ => None,
+    };
+    let expected = expected.as_bytes();
+    let ok = token
+        .is_some_and(|t| t.len() == expected.len() && t.iter().zip(expected).fold(0, |d, (a, b)| d | (a ^ b)) == 0);
+    if ok {
+        next.run(req).await
+    } else {
+        (StatusCode::UNAUTHORIZED, [(header::WWW_AUTHENTICATE, "Bearer realm=\"kanzo\"")], "unauthorized")
+            .into_response()
     }
 }
 
@@ -936,5 +973,126 @@ mod tests {
             assert!(!proxied.allows(bad), "{bad}");
         }
         assert_eq!(lan.address(), IpAddr::from(Ipv4Addr::LOCALHOST));
+    }
+
+    fn block_on<F: std::future::Future>(f: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(f)
+    }
+
+    /// A board with task api#1, served on a free port with `/mcp-remote` on when `bearer` is set.
+    async fn board(bearer: Option<&str>) -> (tempfile::TempDir, Home, u16) {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::open(dir.path().to_path_buf()).unwrap();
+        let store = home.store().unwrap();
+        let project = store.create_project("api", "", None).unwrap();
+        store.create_task(project.id, "Ship it", "").unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let guard = Arc::new(Guard::new(port, Ipv4Addr::LOCALHOST.into(), Net::Private));
+        let app = router(home.clone(), guard, CancellationToken::new(), bearer.map(String::from));
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        (dir, home, port)
+    }
+
+    /// A stateless MCP call; the status code and the whole reply.
+    async fn call(port: u16, path: &str, auth: Option<&str>, method: &str, params: Value) -> (u16, String) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut params = params;
+        params["_meta"] = json!({
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities": {},
+        });
+        let body = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params }).to_string();
+        let name = params["name"].as_str().map(|n| format!("Mcp-Name: {n}\r\n")).unwrap_or_default();
+        let auth = auth.map(|a| format!("Authorization: {a}\r\n")).unwrap_or_default();
+        let head = format!(
+            "POST {path} HTTP/1.0\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n\
+             Accept: application/json, text/event-stream\r\nMCP-Protocol-Version: 2026-07-28\r\n\
+             Mcp-Method: {method}\r\n{name}{auth}Content-Length: {}\r\n\r\n",
+            body.len()
+        );
+        let mut conn = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        conn.write_all(format!("{head}{body}").as_bytes()).await.unwrap();
+        let mut reply = String::new();
+        conn.read_to_string(&mut reply).await.unwrap();
+        let code = reply.split(' ').nth(1).and_then(|c| c.parse().ok()).unwrap_or(0);
+        (code, reply)
+    }
+
+    fn tool(name: &str, arguments: Value) -> Value {
+        json!({ "name": name, "arguments": arguments })
+    }
+
+    use serde_json::Value;
+
+    #[test]
+    fn the_remote_route_needs_the_bearer() {
+        block_on(async {
+            let (_dir, _home, port) = board(Some("fake0123")).await;
+            let list = |auth| call(port, "/mcp-remote", auth, "tools/list", json!({}));
+            assert_eq!(list(None).await.0, 401);
+            assert_eq!(list(Some("Bearer wrong")).await.0, 401);
+            assert_eq!(list(Some("Bearer fake01234")).await.0, 401);
+            assert_eq!(list(Some("Basic fake0123")).await.0, 401);
+            assert_eq!(list(Some("fake0123")).await.0, 401);
+            let (code, reply) = list(Some("bearer fake0123")).await;
+            assert_eq!(code, 200, "{reply}");
+            assert!(reply.contains("create_task"), "{reply}");
+        });
+    }
+
+    #[test]
+    fn without_the_variable_there_is_no_remote_route() {
+        block_on(async {
+            let (_dir, _home, port) = board(None).await;
+            assert_eq!(call(port, "/mcp-remote", Some("Bearer fake0123"), "tools/list", json!({})).await.0, 404);
+            assert_eq!(call(port, "/mcp-remote", None, "tools/list", json!({})).await.0, 404);
+            assert_eq!(call(port, "/mcp", None, "tools/list", json!({})).await.0, 200);
+        });
+    }
+
+    #[test]
+    fn the_remote_route_cannot_delete_and_marks_its_writes() {
+        block_on(async {
+            let (_dir, home, port) = board(Some("fake0123")).await;
+            let remote = |method, params| call(port, "/mcp-remote", Some("Bearer fake0123"), method, params);
+            let (_, tools) = remote("tools/list", json!({})).await;
+            assert!(!tools.contains("delete_task"), "{tools}");
+            let (_, reply) = remote("tools/call", tool("delete_task", json!({ "id": "api#1" }))).await;
+            assert!(!reply.contains("Deleted"), "{reply}");
+            let store = home.store().unwrap();
+            assert_eq!(store.get_task(1).unwrap().title, "Ship it");
+
+            let (_, reply) = remote(
+                "tools/call",
+                tool("create_task", json!({ "title": "From afar", "project": "api", "tags": "bug" })),
+            )
+            .await;
+            assert!(reply.contains("Created api#2"), "{reply}");
+            assert_eq!(store.get_task(2).unwrap().tags, ["bug", "cloud"]);
+            remote("tools/call", tool("update_task", json!({ "id": "api#1", "status": "doing" }))).await;
+            let task = store.get_task(1).unwrap();
+            assert_eq!((task.status.as_str(), task.tags.as_slice()), ("doing", ["cloud".to_string()].as_slice()));
+            remote("tools/call", tool("add_comment", json!({ "id": "api#1", "body": "hi", "author": "claude" }))).await;
+            assert_eq!(store.list_comments(1).unwrap()[0].author, "claude (cloud)");
+        });
+    }
+
+    #[test]
+    fn the_local_route_is_unchanged() {
+        block_on(async {
+            let (_dir, home, port) = board(Some("fake0123")).await;
+            let local = |method, params| call(port, "/mcp", None, method, params);
+            let (code, tools) = local("tools/list", json!({})).await;
+            assert_eq!(code, 200);
+            assert!(tools.contains("delete_task"), "{tools}");
+            local("tools/call", tool("create_task", json!({ "title": "Here", "project": "api" }))).await;
+            local("tools/call", tool("add_comment", json!({ "id": "api#2", "body": "hi", "author": "claude" }))).await;
+            let store = home.store().unwrap();
+            assert!(store.get_task(2).unwrap().tags.is_empty());
+            assert_eq!(store.list_comments(2).unwrap()[0].author, "claude");
+            let (_, reply) = local("tools/call", tool("delete_task", json!({ "id": "api#1" }))).await;
+            assert!(reply.contains("Deleted api#1"), "{reply}");
+        });
     }
 }

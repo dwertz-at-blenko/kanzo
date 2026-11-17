@@ -50,11 +50,14 @@ const HTTP_INSTRUCTIONS: &str =
 
 const NO_PROJECTS: &str = "There are no projects yet. Create one with create_project.";
 
+/// The tag on every task written through `/mcp-remote`, and the suffix on its comments' authors.
+const CLOUD: &str = "cloud";
+
 pub async fn serve(home: Home) -> Result<()> {
     let cwd = std::env::current_dir().unwrap_or_default();
     let repos = git_repos(&cwd);
     let images = home.images();
-    let ctx = Ctx { home, cwd: Some(cwd), repos, images, host: Default::default() };
+    let ctx = Ctx { home, cwd: Some(cwd), repos, images, host: Default::default(), remote: false };
     let server = Kanzo { ctx: Arc::new(ctx), tool_router: Kanzo::tools() };
     let service = server.serve(rmcp::transport::stdio()).await?;
     service.waiting().await?;
@@ -64,11 +67,24 @@ pub async fn serve(home: Home) -> Result<()> {
 /// `web::protect` checks Host and Origin, including when the board listens on the network,
 /// so rmcp's localhost-only list is turned off.
 pub fn http_service(home: Home, shutdown: CancellationToken) -> StreamableHttpService<Kanzo, LocalSessionManager> {
+    http(home, shutdown, false)
+}
+
+/// For agents outside this machine, behind `web`'s bearer check: no delete_task, and every
+/// task or comment written through it is marked `cloud`.
+pub fn remote_service(home: Home, shutdown: CancellationToken) -> StreamableHttpService<Kanzo, LocalSessionManager> {
+    http(home, shutdown, true)
+}
+
+fn http(home: Home, shutdown: CancellationToken, remote: bool) -> StreamableHttpService<Kanzo, LocalSessionManager> {
     let images = home.images();
-    let ctx = Arc::new(Ctx { home, cwd: None, repos: Vec::new(), images, host: Default::default() });
+    let ctx = Arc::new(Ctx { home, cwd: None, repos: Vec::new(), images, host: Default::default(), remote });
     let config = StreamableHttpServerConfig::default().disable_allowed_hosts().with_cancellation_token(shutdown);
     // rmcp makes a server per session, and for some requests; the tool list is built once.
-    let tool_router = Kanzo::tools();
+    let mut tool_router = Kanzo::tools();
+    if remote {
+        tool_router.remove_route("delete_task");
+    }
     StreamableHttpService::new(
         move || Ok(Kanzo { ctx: ctx.clone(), tool_router: tool_router.clone() }),
         Default::default(),
@@ -82,6 +98,8 @@ struct Ctx {
     repos: Vec<String>,
     images: PathBuf,
     host: tokio::sync::Mutex<Option<share::Upstream>>,
+    /// Serving `/mcp-remote`.
+    remote: bool,
 }
 
 impl Ctx {
@@ -121,6 +139,15 @@ impl Ctx {
             }
         };
         Err(Error::NotFound(msg))
+    }
+
+    /// Over `/mcp-remote`, tags a task just written `cloud`, so the board shows where it came from.
+    fn label(&self, store: &Store, task: Task) -> store::Result<Task> {
+        if !self.remote || task.tags.iter().any(|t| t == CLOUD) {
+            return Ok(task);
+        }
+        let tags = task.tags.iter().map(String::as_str).chain([CLOUD]).collect::<Vec<_>>().join(",");
+        store.update_task(task.id, TaskPatch { tags: Some(tags), ..Default::default() })
     }
 }
 
@@ -319,6 +346,7 @@ impl Kanzo {
                     .collect(),
                 images: header(share::IMAGES_HEADER).map_or_else(|| self.ctx.images.clone(), PathBuf::from),
                 host: Default::default(),
+                remote: self.ctx.remote,
             }),
             None => self.ctx.clone(),
         };
@@ -473,7 +501,7 @@ impl Kanzo {
                 let project = ctx.project(store, project.as_deref())?;
                 let status = status.map(|s| s.trim().to_ascii_lowercase()).filter(|s| !s.is_empty());
                 let patch = TaskPatch { description, status, tags, human, ..Default::default() };
-                let t = store.create_task_in(project.id, &title, patch)?;
+                let t = ctx.label(store, store.create_task_in(project.id, &title, patch)?)?;
                 Ok(format!("Created {} in {}: {}", t.key(), t.status, t.title))
             })
             .await)
@@ -482,7 +510,7 @@ impl Kanzo {
     #[tool(description = "Change the fields you pass.")]
     async fn update_task(&self, Parameters(args): Parameters<UpdateTaskArgs>) -> Result<CallToolResult, ErrorData> {
         Ok(self
-            .run(move |_, store| {
+            .run(move |ctx, store| {
                 let before = args.id.find(store)?;
                 let status = args.status.map(|s| s.trim().to_ascii_lowercase());
                 let after = store.update_task(
@@ -497,6 +525,7 @@ impl Kanzo {
                         url: args.url,
                     },
                 )?;
+                let after = ctx.label(store, after)?;
                 let moved = if before.status != after.status {
                     format!(", {} -> {}", before.status, after.status)
                 } else {
@@ -514,7 +543,10 @@ impl Kanzo {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let client = caller(&context).map(|i| i.name).filter(|n| !n.is_empty());
-        let author = args.author.filter(|a| !a.trim().is_empty()).or(client).unwrap_or_else(|| "agent".into());
+        let mut author = args.author.filter(|a| !a.trim().is_empty()).or(client).unwrap_or_else(|| "agent".into());
+        if self.ctx.remote {
+            author = format!("{author} ({CLOUD})");
+        }
         Ok(self
             .run(move |_, store| {
                 let task = args.id.find(store)?;
@@ -534,7 +566,10 @@ impl Kanzo {
             .run_for(&ext, move |ctx, store| {
                 let project = ctx.scope(store, args.project.as_deref())?;
                 match store.next_task_matching(project.as_ref().map(|p| p.id), args.filter.as_deref().unwrap_or(""))? {
-                    Some(task) => Ok(format!("Moved to {}:\n{}", task.status, task_detail(ctx, store, &task)?)),
+                    Some(task) => {
+                        let task = ctx.label(store, task)?;
+                        Ok(format!("Moved to {}:\n{}", task.status, task_detail(ctx, store, &task)?))
+                    }
                     None => {
                         let scope = project.map_or("any project".into(), |p| p.slug);
                         Ok(format!("Nothing in todo for {scope}."))
@@ -690,7 +725,14 @@ mod tests {
     impl Agent {
         fn start(home: Home, folder: &std::path::Path) -> Self {
             let images = home.images();
-            let ctx = Ctx { home, cwd: Some(folder.into()), repos: Vec::new(), images, host: Default::default() };
+            let ctx = Ctx {
+                home,
+                cwd: Some(folder.into()),
+                repos: Vec::new(),
+                images,
+                host: Default::default(),
+                remote: false,
+            };
             let server = Kanzo { ctx: Arc::new(ctx), tool_router: Kanzo::tools() };
             let (ours, theirs) = tokio::io::duplex(1 << 16);
             tokio::spawn(async move { server.serve(tokio::io::split(theirs)).await.unwrap().waiting().await });
