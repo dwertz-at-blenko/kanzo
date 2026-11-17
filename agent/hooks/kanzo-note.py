@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# Version: v2 · created 2026-11-17 03:36 EST · updated 2026-11-17 10:33 EST
-# Changes: v2 the agent also receives the line and repeats it, because the note alone was hidden from Dave (session b1475961). v1 note to the user on every board write.
+# Version: v3 · created 2026-11-17 03:36 EST · updated 2026-11-17 10:36 EST
+# Changes: v3 the line is also saved for the status bar (Dave: "stick in the status bar"). v2 the agent also receives the line and repeats it, because the note alone was hidden from Dave (session b1475961). v1 note to the user on every board write.
 # This file: /home/claude/dev/kanzo/agent/hooks/kanzo-note.py
 # Session: 1434c01e-24f9-406f-856d-7015b5dd7b69 · vps as claude · cwd /home/claude/dev · slug unified-imagining-globe · name "kanzo setup"
 # Resume: ssh -t blenko-claude 'cd /home/claude/dev && claude --resume 1434c01e-24f9-406f-856d-7015b5dd7b69'   (from the Mac)
@@ -14,7 +14,9 @@ asked. Reads (list_tasks, get_task, list_projects) and failed calls print nothin
 hook never touches the board.
 """
 import json
+import os
 import sys
+import time
 
 WRITES = ("create_task", "update_task", "add_comment", "next_task", "delete_task", "create_project", "link_repo")
 QUIET = ("Nothing in todo", "internal error", "Pass `project`", "Cannot tell the project")
@@ -49,6 +51,20 @@ def note(tool, args, text):
     return "Kanzo: " + out[:240]
 
 
+def save(session_id, line):
+    """Leaves the line where the status bar can read it: ~/.claude/state/kanzo/<session>."""
+    sid = "".join(c for c in str(session_id or "") if c.isalnum() or c in "-_")[:80]
+    if not sid:
+        return
+    try:
+        folder = os.path.join(os.path.expanduser("~"), ".claude", "state", "kanzo")
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, sid), "w") as f:
+            f.write("%d|%s\n" % (time.time(), line))
+    except OSError:
+        pass
+
+
 def main():
     try:
         event = json.load(sys.stdin)
@@ -62,6 +78,7 @@ def main():
         return
     line = note(tool, event.get("tool_input") or {}, reply_text(event.get("tool_response")))
     if line:
+        save(event.get("session_id"), line)
         # The systemMessage alone is hidden in focus mode and some app views (Dave saw none on
         # 2026-11-17), so the agent also gets the line and is asked to repeat it in its reply.
         ask = line + " (Dave cannot see hook notes in every view: repeat this line, word for word, in your next reply to him.)"
