@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "Kanzo warp login",
+  "version": "1.0",
+  "description": "Moving warp stars behind the Cloudflare login screen for kanzo.blenko.cloud. Cosmetic only: one canvas behind the page. No permissions, no network, reads nothing.",
+  "content_scripts": [
+    {
+      "matches": ["https://blenko-glass.cloudflareaccess.com/cdn-cgi/access/*/kanzo.blenko.cloud*"],
+      "css": ["stars.css"],
+      "js": ["stars.js"],
+      "run_at": "document_start"
+    }
+  ]
+}

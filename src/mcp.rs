@@ -151,6 +151,11 @@ impl Ctx {
     }
 }
 
+tokio::task_local! {
+    /// The client making the tool call under way, for the activity log.
+    static CLIENT: Option<String>;
+}
+
 fn reply(outcome: Result<String, String>) -> CallToolResult {
     match outcome {
         Ok(text) => CallToolResult::success(vec![ContentBlock::text(text)]),
@@ -350,8 +355,14 @@ impl Kanzo {
             }),
             None => self.ctx.clone(),
         };
+        // The activity log's "who": the client, and the folder its session works in.
+        let client = CLIENT.try_with(Clone::clone).ok().flatten().unwrap_or_else(|| "agent".into());
+        let actor = match ctx.cwd.as_deref().and_then(|d| d.file_name()) {
+            Some(folder) => format!("{client} ({})", folder.to_string_lossy()),
+            None => client,
+        };
         let outcome = tokio::task::spawn_blocking(move || {
-            let store = ctx.home.store().map_err(|e| e.to_string())?;
+            let store = ctx.home.store().map_err(|e| e.to_string())?.acting(actor);
             f(&ctx, &store).map_err(|e| e.to_string())
         })
         .await
@@ -621,7 +632,8 @@ impl ServerHandler for Kanzo {
             let outcome = upstream.call(client, &request.name, request.arguments).await;
             return Ok(reply(outcome).into());
         }
-        self.tool_router.call(ToolCallContext::new(self, request, context)).await
+        let client = caller(&context).map(|i| i.name).filter(|n| !n.is_empty());
+        CLIENT.scope(client, self.tool_router.call(ToolCallContext::new(self, request, context))).await
     }
 
     fn get_info(&self) -> ServerConfig {

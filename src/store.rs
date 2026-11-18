@@ -136,6 +136,20 @@ pub struct Image {
     pub file: String,
 }
 
+/// One row of the activity log: what happened to a task, a comment or a project, and when.
+#[derive(Debug, Clone, Serialize)]
+pub struct Activity {
+    pub id: i64,
+    pub at: String,
+    /// Who did it, as far as Kanzo knows: "board", or an agent's client and folder.
+    pub actor: Option<String>,
+    pub action: String,
+    pub task_id: Option<i64>,
+    pub project: Option<String>,
+    pub title: String,
+    pub detail: String,
+}
+
 #[derive(Debug, Default)]
 pub struct TaskPatch {
     pub title: Option<String>,
@@ -153,12 +167,21 @@ pub const DONE: &str = STATUSES[3];
 
 pub const BACKLOG: &str = "backlog";
 
+/// The activity log's table and triggers. Not one of `MIGRATIONS`, so this fork and upstream
+/// never number each other's steps; `Store::migrate` runs the file once per version of it.
+const ACTIVITY_SQL: &str = include_str!("activity.sql");
+const ACTIVITY_VERSION: &str = "1";
+/// How many rows of the log one request returns.
+pub const ACTIVITY_PAGE: usize = 100;
+
 /// What a task shows besides its id, title and status; each can be turned off in Settings.
 const PROPERTIES: [&str; 8] = ["description", "tags", "url", "human", "created", "updated", "comments", "images"];
 
 pub struct Store {
     conn: Connection,
     statuses: Vec<String>,
+    /// Who the activity log says made this store's writes.
+    actor: Option<String>,
     /// Declared after `conn` so it is released after the connection closes.
     _lock: Option<std::fs::File>,
 }
@@ -179,7 +202,13 @@ impl Store {
             .query_row("SELECT value FROM meta WHERE key = 'backlog'", [], |r| r.get::<_, String>(0))
             .is_ok_and(|v| v == "1");
         let statuses = backlog.then_some(BACKLOG).into_iter().chain(STATUSES).map(String::from).collect();
-        Ok(Self { conn, statuses, _lock: lock })
+        Ok(Self { conn, statuses, actor: None, _lock: lock })
+    }
+
+    /// Names the writer for the activity log.
+    pub fn acting(mut self, actor: impl Into<String>) -> Self {
+        self.actor = Some(actor.into());
+        self
     }
 
     pub fn statuses(&self) -> &[String] {
@@ -252,7 +281,23 @@ impl Store {
     /// Immediate, so concurrent writers queue up on the busy timeout instead of failing halfway.
     fn write<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
         self.conn.execute_batch("BEGIN IMMEDIATE")?;
-        match f(&self.conn) {
+        // Triggers write the activity log and cannot know who is writing, so note where the
+        // log ends and sign what this write adds to it. No log yet: nothing to sign.
+        let mark = self.actor.as_ref().and_then(|_| {
+            self.conn
+                .prepare_cached("SELECT coalesce(max(id), 0) FROM activity")
+                .and_then(|mut q| q.query_row([], |r| r.get::<_, i64>(0)))
+                .ok()
+        });
+        let signed = f(&self.conn).and_then(|v| {
+            if let (Some(actor), Some(mark)) = (&self.actor, mark) {
+                self.conn
+                    .prepare_cached("UPDATE activity SET actor = ?1 WHERE id > ?2 AND actor IS NULL")?
+                    .execute(params![actor, mark])?;
+            }
+            Ok(v)
+        });
+        match signed {
             Ok(v) => {
                 self.conn.execute_batch("COMMIT")?;
                 Ok(v)
@@ -276,7 +321,7 @@ impl Store {
         let current =
             (meta(&self.conn, "schema_version").unwrap_or(None), meta(&self.conn, "compatible").unwrap_or(None));
         if current == (Some(latest), Some(COMPATIBLE_FROM)) {
-            return Ok(());
+            return self.activity_log();
         }
         self.write(|c| {
             c.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)", [])?;
@@ -300,7 +345,52 @@ impl Store {
                 [latest.to_string(), COMPATIBLE_FROM.to_string()],
             )?;
             Ok(())
+        })?;
+        self.activity_log()
+    }
+
+    /// Sets up the activity log, or brings it to this version. One read when it is current.
+    fn activity_log(&self) -> Result<()> {
+        let version = |c: &Connection| -> rusqlite::Result<Option<String>> {
+            c.query_row("SELECT value FROM meta WHERE key = 'activity'", [], |r| r.get(0)).optional()
+        };
+        if version(&self.conn)?.as_deref() == Some(ACTIVITY_VERSION) {
+            return Ok(());
+        }
+        self.write(|c| {
+            if version(c)?.as_deref() != Some(ACTIVITY_VERSION) {
+                c.execute_batch(ACTIVITY_SQL)?;
+                c.execute(
+                    "INSERT INTO meta (key, value) VALUES ('activity', ?1)
+                     ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    [ACTIVITY_VERSION],
+                )?;
+            }
+            Ok(())
         })
+    }
+
+    /// The activity log, newest first: one page ending before row `before`, for one project
+    /// or for all of them.
+    pub fn list_activity(&self, before: Option<i64>, project: Option<&str>) -> Result<Vec<Activity>> {
+        let mut q = self.conn.prepare_cached(
+            "SELECT id, at, actor, action, task_id, project, title, detail FROM activity
+             WHERE (?1 IS NULL OR id < ?1) AND (?2 IS NULL OR project = ?2)
+             ORDER BY id DESC LIMIT ?3",
+        )?;
+        let rows = q.query_map(params![before, project, ACTIVITY_PAGE as i64], |r| {
+            Ok(Activity {
+                id: r.get(0)?,
+                at: r.get(1)?,
+                actor: r.get(2)?,
+                action: r.get(3)?,
+                task_id: r.get(4)?,
+                project: r.get(5)?,
+                title: r.get(6)?,
+                detail: r.get(7)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     pub fn changes(&self) -> Result<i64> {
@@ -468,8 +558,13 @@ impl Store {
 
     pub fn delete_project(&self, slug: &str) -> Result<Project> {
         let project = self.find_project(slug)?;
-        // Tasks and comments go with it through ON DELETE CASCADE.
-        self.conn.execute("DELETE FROM projects WHERE id = ?1", [project.id])?;
+        // Comments go with the tasks through ON DELETE CASCADE. The tasks go first, by hand,
+        // so the activity log can still name their project.
+        self.write(|c| {
+            c.execute("DELETE FROM tasks WHERE project_id = ?1", [project.id])?;
+            c.execute("DELETE FROM projects WHERE id = ?1", [project.id])?;
+            Ok(())
+        })?;
         Ok(project)
     }
 
@@ -772,7 +867,7 @@ impl Store {
 
     pub fn delete_task(&self, id: i64) -> Result<Task> {
         let task = self.get_task(id)?;
-        self.conn.execute("DELETE FROM tasks WHERE id = ?1", [id])?;
+        self.write(|c| Ok(c.execute("DELETE FROM tasks WHERE id = ?1", [id])?))?;
         Ok(task)
     }
 
@@ -823,7 +918,7 @@ impl Store {
 
     pub fn delete_comment(&self, id: i64) -> Result<Comment> {
         let comment = self.get_comment(id)?;
-        self.conn.execute("DELETE FROM comments WHERE id = ?1", [id])?;
+        self.write(|c| Ok(c.execute("DELETE FROM comments WHERE id = ?1", [id])?))?;
         Ok(comment)
     }
 
@@ -1175,6 +1270,96 @@ mod tests {
         let store = Store::open(&dir.path().join("kanzo.db"), None).unwrap();
         store.migrate().unwrap();
         (dir, store)
+    }
+
+    /// The log as "actor action title detail" lines, oldest first.
+    fn log(s: &Store) -> Vec<String> {
+        let mut rows = s.list_activity(None, None).unwrap();
+        rows.reverse();
+        rows.iter()
+            .map(|a| format!("{} {} {} [{}]", a.actor.as_deref().unwrap_or("-"), a.action, a.title, a.detail))
+            .collect()
+    }
+
+    #[test]
+    fn the_activity_log_records_every_change_and_who_made_it() {
+        let (_dir, s) = store();
+        let s = s.acting("board");
+        let p = s.create_project("api", "API", None).unwrap();
+        let t = s.create_task(p.id, "Ship it", "").unwrap();
+        s.move_task(t.id, "doing", None).unwrap();
+        s.move_task(t.id, "doing", None).unwrap(); // the same column: not a move
+        s.update_task(
+            t.id,
+            TaskPatch { title: Some("Ship it now".into()), tags: Some("ops".into()), ..Default::default() },
+        )
+        .unwrap();
+        s.update_task(t.id, TaskPatch { status: Some("review".into()), ..Default::default() }).unwrap();
+        let c = s.add_comment(t.id, "me", "done, see the PR", &[]).unwrap();
+        s.delete_comment(c.id).unwrap();
+        s.delete_task(t.id).unwrap();
+        assert_eq!(
+            log(&s),
+            [
+                "board project created API []",
+                "board created Ship it [todo]",
+                "board moved Ship it [todo > doing]",
+                "board edited Ship it now [title (was: Ship it), tags ( > ops)]",
+                "board moved Ship it now [doing > review]",
+                "board commented Ship it now [done, see the PR]",
+                "board comment deleted Ship it now [done, see the PR]",
+                "board deleted Ship it now [review]",
+            ]
+        );
+        let rows = s.list_activity(None, Some("api")).unwrap();
+        assert_eq!(rows.len(), 8);
+        assert_eq!((rows[0].task_id, rows[0].project.as_deref()), (Some(t.id), Some("api")));
+        assert_eq!(s.list_activity(Some(rows[6].id), None).unwrap().len(), 1, "the page before a row");
+        assert!(s.list_activity(None, Some("web")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn deleting_a_project_logs_its_tasks_under_its_name() {
+        let (_dir, s) = store();
+        let s = s.acting("claude-code (api)");
+        let p = s.create_project("api", "API", None).unwrap();
+        let t = s.create_task(p.id, "One", "").unwrap();
+        s.add_comment(t.id, "me", "note", &[]).unwrap();
+        s.create_task(p.id, "Two", "").unwrap();
+        s.delete_project("api").unwrap();
+        let rows = s.list_activity(None, None).unwrap();
+        let tail: Vec<_> =
+            rows.iter().take(3).map(|a| (a.action.as_str(), a.project.as_deref(), a.title.as_str())).collect();
+        assert_eq!(tail[0], ("project deleted", Some("api"), "API"));
+        assert!(tail[1..].iter().all(|r| r.0 == "deleted" && r.1 == Some("api")), "{tail:?}");
+        assert!(rows.iter().all(|a| a.actor.as_deref() == Some("claude-code (api)")));
+        assert_eq!(
+            rows.iter().filter(|a| a.action == "comment deleted").count(),
+            0,
+            "the task's row covers its comments"
+        );
+    }
+
+    /// A board from before the log gets what it already knows, in order; a writer that is
+    /// not this Kanzo is still recorded, unsigned.
+    #[test]
+    fn the_activity_log_starts_from_what_the_board_knows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("kanzo.db");
+        let s = Store::open(&path, None).unwrap();
+        s.migrate().unwrap();
+        let p = s.create_project("api", "API", None).unwrap();
+        let t = s.create_task(p.id, "Old task", "").unwrap();
+        s.add_comment(t.id, "claude-code", "from before", &[]).unwrap();
+        s.conn.execute_batch("DELETE FROM activity; DELETE FROM meta WHERE key = 'activity';").unwrap();
+        drop(s);
+        let s = Store::open(&path, None).unwrap();
+        s.migrate().unwrap();
+        assert_eq!(log(&s), ["- created Old task []", "claude-code commented Old task [from before]"]);
+        s.migrate().unwrap();
+        assert_eq!(log(&s).len(), 2, "set up once");
+        s.conn.execute("UPDATE tasks SET status = 'done' WHERE id = ?1", [t.id]).unwrap();
+        assert_eq!(log(&s)[2], "- moved Old task [todo > done]");
     }
 
     fn titles(tasks: &[Task]) -> Vec<&str> {

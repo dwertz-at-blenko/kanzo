@@ -468,6 +468,28 @@ label.setting { cursor: pointer; }
 .theme-tab:hover, .theme-tab:focus-visible { color: var(--text); }
 .theme-tab[aria-pressed="true"] { background: var(--bg); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.08); }
 .theme-version { color: var(--faint); font-size: 11px; text-align: right; font-variant-numeric: tabular-nums; }
+/* The activity log: a dialog like Settings, one row per thing that happened. */
+.activity-window { height: min(640px, 80vh); }
+.activity-window .settings-head select.field { width: auto; margin-left: 14px; padding: 4px 8px; font-size: 13px; }
+.activity-list { overflow-y: auto; padding: 4px 22px 16px; }
+.activity-day { margin: 0; padding: 14px 0 6px; color: var(--muted); font-size: 12px; font-weight: 600; }
+.activity-row { display: grid; grid-template-columns: 62px minmax(0, 1fr); gap: 10px; padding: 7px 0; border-top: 1px solid var(--border); }
+.activity-row time { padding-top: 2px; color: var(--faint); font-size: 12px; font-variant-numeric: tabular-nums; }
+.activity-row .who { color: var(--muted); }
+.activity-row .task { padding: 0; border: 0; background: none; color: var(--text); font-weight: 500; text-align: left; }
+.activity-row button.task:hover, .activity-row button.task:focus-visible { text-decoration: underline; }
+.activity-row .detail { display: block; overflow: hidden; color: var(--muted); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.activity-list .btn { display: block; margin: 14px auto 0; }
+.activity-list p { margin: 18px 0; color: var(--muted); }
+/* Warp stars (stars.js): one faint canvas behind the board. */
+#stars { position: fixed; inset: 0; width: 100%; height: 100%; z-index: -1; pointer-events: none; opacity: .5; }
+.theme-tab.help { flex: none; }
+.howto summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.howto summary:hover, .howto[open] summary { color: var(--text); }
+.howto ol { margin: 10px 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
+.howto a { color: var(--link); }
+.howto code { padding: 1px 5px; border-radius: 4px; background: var(--code); font-size: 12px; }
+.settings-pane .howto p { font-size: 13px; }
 [hidden] { display: none !important; }
 
 @media (max-width: 700px) {
@@ -499,9 +521,14 @@ label.setting { cursor: pointer; }
   <button class="ghost" id="new-project-toggle"><span class="icon" data-icon="newProject"></span>New project</button>
   <nav class="nav" id="nav"></nav>
   <button class="ghost update" id="update" hidden><span class="icon" data-icon="update"></span><span id="update-label"></span></button>
+  <button class="ghost" id="activity-open" title="What happened on the board, and when"><span class="icon" data-icon="activity"></span>Activity</button>
   <button class="ghost" id="settings" aria-haspopup="menu"><span class="icon" data-icon="settings"></span>Settings</button>
   <div class="theme-bar" id="theme-bar" data-agent="theme-switcher">
     <div class="theme-tabs" role="group" aria-label="Theme" id="theme-tabs"></div>
+    <div class="theme-tabs" role="group" aria-label="Background">
+      <button class="theme-tab" type="button" id="stars-toggle" aria-pressed="false" title="Moving stars behind the board, in this browser">Warp stars</button>
+      <button class="theme-tab help" type="button" id="stars-help" title="How to get the stars on the sign-in page too" aria-label="Stars at sign-in: how to">?</button>
+    </div>
     <div class="theme-version" id="theme-version"></div>
   </div>
 </aside>
@@ -576,6 +603,19 @@ label.setting { cursor: pointer; }
           <span class="text">Theme<span>The look of the board, in every browser that opens it</span></span>
           <select class="field" id="settings-theme" aria-label="Theme"></select>
         </label>
+        <label class="setting">
+          <span class="text">Warp stars<span>Moving stars behind the board, in this browser only</span></span>
+          <span class="switch"><input type="checkbox" id="settings-stars" aria-label="Warp stars"><span></span></span>
+        </label>
+        <details class="howto" id="stars-howto">
+          <summary>Stars at sign-in too: how to add them</summary>
+          <ol>
+            <li><a href="/warp-addon.zip" download>Download the add-on</a> and unzip it.</li>
+            <li>Open <code>chrome://extensions</code> and turn on Developer mode (top right).</li>
+            <li>Click Load unpacked and pick the <code>kanzo-warp-addon</code> folder.</li>
+          </ol>
+          <p>For Chrome, Edge, Brave and Comet. It draws stars behind the Kanzo sign-in page in your browser and nothing else: no permissions, nothing read or sent. Remove it on the same page.</p>
+        </details>
         <h3>Task properties</h3>
         <p>Turn one off to hide it on the board and leave it out of what agents get. Nothing is deleted.</p>
       </section>
@@ -597,6 +637,16 @@ label.setting { cursor: pointer; }
         </div>
       </section>
     </div>
+  </div>
+</div>
+<div class="search-dialog" id="activity-dialog" data-agent="activity-log" hidden>
+  <div class="settings-window activity-window" role="dialog" aria-labelledby="activity-title">
+    <div class="settings-head">
+      <h2 id="activity-title">Activity</h2>
+      <select class="field" id="activity-scope" aria-label="Show activity for"></select>
+      <button class="ghost" id="activity-close" title="Close (Esc)" aria-label="Close"><span class="icon" data-icon="close"></span></button>
+    </div>
+    <div class="activity-list" id="activity-list"></div>
   </div>
 </div>
 <div class="popover" id="network-menu" role="dialog" aria-label="Share" hidden>
@@ -641,6 +691,7 @@ label.setting { cursor: pointer; }
 
 <div class="offline" id="offline" hidden>Board not reachable — is kanzo running?</div>
 
+<script src="/stars.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

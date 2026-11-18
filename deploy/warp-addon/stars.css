@@ -1,0 +1,11 @@
+/* Version: v1 · created 2026-11-14 17:15 EST · updated 2026-11-14 17:15 EST
+ * Changes: v1 v1 initial.
+ * This file: /home/claude/dev/kanzo/.claude/worktrees/warp-splash/deploy/warp-addon/stars.css
+ * Session: 1434c01e-24f9-406f-856d-7015b5dd7b69 · vps as claude · cwd /home/claude/dev
+ * Resume: ssh -t blenko-claude 'cd /home/claude/dev && claude --resume 1434c01e-24f9-406f-856d-7015b5dd7b69'   (from the Mac)
+ */
+/* Kanzo warp login: let the star canvas show behind the Cloudflare login card. Cosmetic only. */
+html { background: #02030a !important; }
+body { background: transparent !important; }
+#kanzo-warp-sky { position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: -1; pointer-events: none; }
+.base_AccessLogo { filter: brightness(0) invert(1); opacity: .65; }
