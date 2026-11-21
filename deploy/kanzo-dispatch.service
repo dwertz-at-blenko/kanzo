@@ -1,0 +1,35 @@
+# Version: v1 · created 2026-11-21 13:26 EST · updated 2026-11-21 13:26 EST
+# Changes: v1 user unit for kanzo-dispatch (comment @claude on a card to start a session).
+# This file: /home/claude/dev/kanzo/deploy/kanzo-dispatch.service (repo dwertz-at-blenko/kanzo, branch public-url)
+# Session: b1475961-06d7-40b0-9eff-f2b47896b6bb · vps as claude · cwd /home/claude/dev
+[Unit]
+# systemd USER unit. Linger is enabled for `claude`, so it starts at boot. Install:
+#   ln -sf ~/dev/kanzo/deploy/kanzo-dispatch.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now kanzo-dispatch
+# It holds no secrets and no vault token: it reads the board on loopback, writes through the
+# board's /mcp as kanzo-dispatch, and runs `claude`, which uses this user's own Claude login.
+Description=kanzo-dispatch: start a Claude session from a Kanzo card comment
+After=kanzo-web.service
+Wants=kanzo-web.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/claude/dev/kanzo
+Environment=KANZO_HOME=/home/claude/.local/share/kanzo
+Environment=PATH=/home/claude/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 /home/claude/dev/kanzo/agent/dispatch/kanzo_dispatch.py --loop --interval 5 --board http://127.0.0.1:8111 --dev-root /home/claude/dev --max 3
+Restart=on-failure
+RestartSec=10
+# Background sessions run under `claude daemon run`, which `claude --bg` launches when it is not
+# already up. Started from here, it would sit in this unit's cgroup, and a restart would kill
+# every background session on the box. Stop only the dispatcher itself.
+KillMode=process
+# No PrivateTmp: the claude daemon's sockets live in /tmp/cc-daemon-<uid>, and so does the
+# dispatcher's private tmux socket.
+
+NoNewPrivileges=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true
+
+[Install]
+WantedBy=default.target

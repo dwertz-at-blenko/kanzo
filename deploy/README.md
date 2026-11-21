@@ -29,10 +29,25 @@ Update: merge into `public-url` (from upstream: `git fetch upstream && git merge
 
 `deploy/test-deploy.sh` proves the refusals on a throwaway repo, away from the live board.
 
+## kanzo-dispatch
+
+Dave comments `@claude ...` on a card and a background Claude session picks it up; how it works is in `agent/dispatch/README.md`. It is a Python script run from this checkout, so it ships with a pull of `public-url`, not with `deploy.sh`, and it adds no HTTP route (no `features.txt` line).
+
+| Piece | Value |
+|---|---|
+| Unit | `kanzo-dispatch.service` (user), `KillMode=process` so a restart never takes the claude daemon and its sessions down |
+| Reads | `http://127.0.0.1:8111` API; `kanzo.db` read-only once, on the first run |
+| Writes | the board's `/mcp` as `kanzo-dispatch`; state in `~/.local/share/kanzo/dispatch/state.json` |
+| Secrets | none: no vault token, `claude` uses this user's login |
+
+1. Dry run first: `agent/dispatch/kanzo_dispatch.py --once --dry-run` (writes nothing, prints what it would do).
+2. Install: `ln -sf ~/dev/kanzo/deploy/kanzo-dispatch.service ~/.config/systemd/user/ && systemctl --user daemon-reload && systemctl --user enable --now kanzo-dispatch`
+3. Log: `journalctl --user -u kanzo-dispatch -f`. After two start failures in a row it stops starting sessions until `systemctl --user restart kanzo-dispatch`.
+
 ---
 
-> **Version:** v5 · created 2026-11-05 18:55 EST · updated 2026-11-21 07:16 EST
-> **Changes:** v1 initial. v2 2026-11-07 LCARS theme on, seeded projects. v3 2026-11-07 theme toggle. v4 2026-11-12 three-way theme engine, Skeletal default, fork pushed to github.com/dwertz-at-blenko/kanzo (session 421baa4d). v5 2026-11-21 deploy only through deploy/deploy.sh: commit stamp, features.txt, rollback (session b1475961-06d7-40b0-9eff-f2b47896b6bb).
+> **Version:** v6 · created 2026-11-05 18:55 EST · updated 2026-11-21 13:26 EST
+> **Changes:** v1 initial. v2 2026-11-07 LCARS theme on, seeded projects. v3 2026-11-07 theme toggle. v4 2026-11-12 three-way theme engine, Skeletal default, fork pushed to github.com/dwertz-at-blenko/kanzo (session 421baa4d). v5 2026-11-21 deploy only through deploy/deploy.sh: commit stamp, features.txt, rollback (session b1475961-06d7-40b0-9eff-f2b47896b6bb). v6 2026-11-21 kanzo-dispatch section (same session).
 > **This file:** /home/claude/dev/kanzo/deploy/README.md
 > **Session:** 08cf0c04-265c-4b64-8e18-d5679b1a650d · vps as claude · cwd /home/claude/dev
 > **Resume:** ssh -t blenko-claude 'cd /home/claude/dev && claude --resume 08cf0c04-265c-4b64-8e18-d5679b1a650d'   (from the Mac)
