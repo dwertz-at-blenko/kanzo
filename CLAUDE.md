@@ -16,6 +16,8 @@ Upstream is [emanuele-em/kanzo](https://github.com/emanuele-em/kanzo); this fork
 
 Agents working in this or any repo of Dave's keep the board honest: `.claude/skills/kanzo-board/SKILL.md` (routine and conventions), `agent/hooks/` (SessionStart and Stop hooks), `tools/board-audit/` (collect and apply).
 
+`agent/dispatch/` is kanzo-dispatch, which starts a background Claude session when Dave comments `@claude` on a card and routes his later comments to it (`agent/dispatch/README.md`).
+
 ## Deploying to the VPS
 
 Only with `deploy/deploy.sh`, on the VPS, from a pushed `public-url` (`--check` first; `deploy/README.md` says what it checks). Never copy a binary into `target/release/` from a worktree, and never build the live checkout by hand. A feature that ships adds its line to `deploy/features.txt` in the same change; taking one off the board takes `--drop-feature`. Why: on 2026-11-17 a rebuild replaced a binary built from an unmerged branch, and the stars and the log's signing left the board for 30 hours. `docs/ops/` has the handoffs.
