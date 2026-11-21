@@ -1,0 +1,31 @@
+# What is live on kanzo.blenko.cloud. A deploy must keep every line: deploy/deploy.sh
+# checks each one against the restarted board (and rolls back if one fails), and refuses
+# to ship a list that lost a name the running board's list has, unless that name is given
+# with --drop-feature. A feature that ships adds its line here in the same change.
+#
+# name | path | status | text the body must contain (optional)
+#
+# Each check is one plain curl GET with no headers. status is one code, a comma list
+# (401,404), or !404 for "any answer but 404". That is how the MCP routes are checked:
+#   /mcp         answers 406 to a plain GET (it wants an MCP client); !404 proves it is mounted.
+#   /mcp-remote  answers 401 without a bearer when the cloud route is on, and 404 when its
+#                variable (KANZO_REMOTE_BEARER) is unset, so 401,404.
+# The activity log's signing (who made each change) is store code, not a page: cargo test
+# proves it (store.rs, the_activity_log_records_every_change_and_who_made_it).
+
+board page             | /                    | 200     | id="activity-dialog"
+theme engine           | /                    | 200     | <meta name="kanzo-themes"
+board loads the stars  | /                    | 200     | <script src="/stars.js"></script>
+board script           | /app.js              | 200     | loadActivity
+stars switch           | /app.js              | 200     | kanzoStars
+warp stars             | /stars.js            | 200     | window.kanzoStars
+theme preview          | /theme.js            | 200     | dataset.theme
+lcars theme            | /lcars.css           | 200     | html[data-theme="lcars"]
+skeletal theme         | /skeletal.css        | 200     | html[data-theme="skeletal"]
+antonio font           | /fonts/antonio.woff2 | 200
+warp add-on            | /warp-addon.zip      | 200
+activity log api       | /api/activity        | 200
+board api              | /api/board           | 200     | "theme":"
+version api            | /api/version         | 200     | "commit":"
+mcp                    | /mcp                 | !404
+mcp remote             | /mcp-remote          | 401,404

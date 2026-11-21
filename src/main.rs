@@ -19,7 +19,7 @@ use crate::home::Home;
 ///
 /// Run `kanzo` to open the board. Agents connect with `kanzo mcp`.
 #[derive(Parser)]
-#[command(name = "kanzo", version)]
+#[command(name = "kanzo", version = env!("KANZO_LONG_VERSION"))]
 struct Cli {
     /// Data folder [default: $KANZO_HOME, then ~/kanzo]
     #[arg(long, global = true, value_name = "DIR")]

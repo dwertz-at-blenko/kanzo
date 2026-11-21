@@ -222,6 +222,7 @@ fn router(home: Home, guard: Arc<Guard>, shutdown: CancellationToken, remote: Op
         .route("/fonts/antonio.woff2", get(|| async { ([(header::CONTENT_TYPE, "font/woff2")], ANTONIO) }))
         .route("/logo.png", get(|| async { ([(header::CONTENT_TYPE, "image/png")], LOGO) }))
         .route("/api/ping", get(|| async { "kanzo" }))
+        .route("/api/version", get(version))
         .route("/api/update", get(update_status).post(update_now))
         .route("/api/network", get(network).post(change_network).route_layer(middleware::from_fn(this_computer)))
         .merge(shared)
@@ -244,6 +245,15 @@ async fn index(State(home): Shared) -> Html<&'static str> {
     .and_then(|t| Theme::parse(&t))
     .unwrap_or_else(|| home.config.theme().unwrap_or(Theme::Kanzo));
     Html(page(theme))
+}
+
+/// The version and the commit this binary was built from (build.rs), for `deploy/deploy.sh`.
+/// Beside `/api/ping`, not with the board's API: a board that joins another still says what
+/// runs here, and anyone who can read the board can read it.
+async fn version() -> Json<serde_json::Value> {
+    let stamp = env!("KANZO_COMMIT");
+    let commit = stamp.strip_suffix("-dirty").unwrap_or(stamp);
+    Json(json!({ "version": update::CURRENT, "commit": commit, "dirty": commit != stamp }))
 }
 
 /// The board page with `data-theme` on `<html>`, built once per theme. Two `<meta>` tags
@@ -1124,6 +1134,27 @@ mod tests {
             assert_eq!((task.status.as_str(), task.tags.as_slice()), ("doing", ["cloud".to_string()].as_slice()));
             remote("tools/call", tool("add_comment", json!({ "id": "api#1", "body": "hi", "author": "claude" }))).await;
             assert_eq!(store.list_comments(1).unwrap()[0].author, "claude (cloud)");
+        });
+    }
+
+    /// What `deploy/deploy.sh` reads to learn which commit the running board was built from.
+    #[test]
+    fn the_version_names_the_commit() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        block_on(async {
+            let (_dir, _home, port) = board(None).await;
+            let mut conn = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+            conn.write_all(b"GET /api/version HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n").await.unwrap();
+            let mut reply = String::new();
+            conn.read_to_string(&mut reply).await.unwrap();
+            let (head, body) = reply.split_once("\r\n\r\n").unwrap();
+            assert!(head.starts_with("HTTP/1.0 200"), "{reply}");
+            let v: Value = serde_json::from_str(body).unwrap();
+            let commit = env!("KANZO_COMMIT").trim_end_matches("-dirty");
+            let dirty = commit != env!("KANZO_COMMIT");
+            assert_eq!(v, json!({ "version": update::CURRENT, "commit": commit, "dirty": dirty }));
+            let sha = commit.len() == 40 && commit.bytes().all(|b| b.is_ascii_hexdigit());
+            assert!(sha || commit == "unknown", "{commit}");
         });
     }
 

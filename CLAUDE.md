@@ -18,4 +18,4 @@ Agents working in this or any repo of Dave's keep the board honest: `.claude/ski
 
 ## Deploying to the VPS
 
-Only from the VPS itself (Cloudflare Access keeps everything else out): pull into `~/dev/kanzo`, `cargo build --release`, `systemctl --user restart kanzo-web`, check `http://127.0.0.1:8111/` and the edge. `docs/ops/` has the handoffs.
+Only with `deploy/deploy.sh`, on the VPS, from a pushed `public-url` (`--check` first; `deploy/README.md` says what it checks). Never copy a binary into `target/release/` from a worktree, and never build the live checkout by hand. A feature that ships adds its line to `deploy/features.txt` in the same change; taking one off the board takes `--drop-feature`. Why: on 2026-11-17 a rebuild replaced a binary built from an unmerged branch, and the stars and the log's signing left the board for 30 hours. `docs/ops/` has the handoffs.
