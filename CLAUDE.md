@@ -16,7 +16,7 @@ Upstream is [emanuele-em/kanzo](https://github.com/emanuele-em/kanzo); this fork
 
 Agents working in this or any repo of Dave's keep the board honest: `.claude/skills/kanzo-board/SKILL.md` (routine and conventions), `agent/hooks/` (SessionStart and Stop hooks), `tools/board-audit/` (collect and apply).
 
-`agent/dispatch/` is kanzo-dispatch, which starts a background Claude session when Dave comments on a card (not when he ticks "Do not send to agent") and routes his later comments to it (`agent/dispatch/README.md`).
+`agent/dispatch/` is kanzo-dispatch, which sends Dave's card comment to the live session already working that card, or starts a background Claude session when none is (never when he ticks "Do not send to agent") (`agent/dispatch/README.md`).
 
 ## Deploying to the VPS
 
