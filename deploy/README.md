@@ -31,7 +31,7 @@ Update: merge into `public-url` (from upstream: `git fetch upstream && git merge
 
 ## kanzo-dispatch
 
-Dave comments `@claude ...` on a card and a background Claude session picks it up; how it works is in `agent/dispatch/README.md`. It is a Python script run from this checkout, so it ships with a pull of `public-url`, not with `deploy.sh`, and it adds no HTTP route (no `features.txt` line).
+Dave comments on a card (unless he ticks "Do not send to agent") and a background Claude session picks it up; how it works is in `agent/dispatch/README.md`. It is a Python script run from this checkout, so it ships with a pull of `public-url`, not with `deploy.sh`, and it adds no HTTP route (no `features.txt` line).
 
 | Piece | Value |
 |---|---|

@@ -29,7 +29,7 @@ sys.path.insert(0, str(HERE))
 sys.dont_write_bytecode = True                           # no __pycache__ left in the repo
 import kanzo_dispatch as kd  # noqa: E402
 
-PORT = 8198
+PORT = int(os.environ.get("KANZO_TEST_PORT", "8198"))
 URL = f"http://127.0.0.1:{PORT}"
 
 FAKE = r'''#!PYTHON
@@ -209,12 +209,22 @@ class Dispatch(Base):
         self.d.tick()
         self.assertEqual(self.calls("--bg")[0]["cwd"], self.dev)
 
-    def test_plain_comment_starts_nothing(self):
+    def test_plain_comment_starts_a_session(self):
         tid = self.card()
-        self.dave(tid, "just a note, claude is not called here")
+        self.dave(tid, "look into why the export is slow")
+        self.d.tick()
+        self.assertEqual(len(self.calls("--bg")), 1)
+
+    def test_note_starts_nothing_and_is_not_delivered(self):
+        tid = self.card()
+        self.dave(tid, "[note] reminder to self, not for an agent")
         self.d.tick()
         self.assertEqual(self.calls("--bg"), [])
         self.assertEqual(self.mine(tid), [])
+        self.started(tid)
+        self.dave(tid, " [Note] another one for the record")
+        self.d.tick()
+        self.assertFalse(self.d.st["cards"][str(tid)].get("pending"))
 
     def test_follow_up_goes_to_the_attached_session(self):
         tid = self.card()
@@ -254,21 +264,23 @@ class Dispatch(Base):
         self.assertEqual([c["argv"] for c in self.calls("stop")], [["stop", short]])
         self.assertIn("Stopped the session for this card.", self.mine(tid))
         self.assertNotIn(str(tid), self.d.st["cards"])
-        self.dave(tid, "a plain note after the stop")
+        self.dave(tid, "[note] a note after the stop")
         self.d.tick()
         self.assertEqual(len(self.calls("--bg")), 1)
-
-    def test_done_card_needs_at_claude_again(self):
-        tid = self.card()
-        self.started(tid)
-        http("PATCH", f"/api/tasks/{tid}", {"status": "done"})
-        self.dave(tid, "thanks")
+        self.dave(tid, "pick this back up")
         self.d.tick()
-        self.assertEqual(self.calls("attach"), [])
-        self.dave(tid, "@claude one more change")
-        self.d.tick()
-        self.assertEqual(len(self.calls("stop")), 1)     # never two sessions for one card
         self.assertEqual(len(self.calls("--bg")), 2)
+
+    def test_comment_on_a_done_card_reaches_its_session(self):
+        tid = self.card()
+        short = self.started(tid)
+        http("PATCH", f"/api/tasks/{tid}", {"status": "done"})
+        self.set_agent(short, status="idle", state="done")
+        self.dave(tid, "one more change")
+        self.d.tick()
+        transcript = pathlib.Path(self.fake_dir, ".claude", "projects", "fake", f"sid-{short}.jsonl").read_text()
+        self.assertIn("one more change", transcript)
+        self.assertEqual(len(self.calls("--bg")), 1)     # never two sessions for one card
 
     def test_queue_at_the_cap(self):
         self.d = self.dispatcher(max_working=1)

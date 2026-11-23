@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 # Version: v1 · created 2026-11-21 13:26 EST · updated 2026-11-21 13:26 EST
 # Changes: v1 watch the board for Dave's @claude comments and run one background Claude session per card.
+#          v2 2026-11-23 any comment by Dave starts or reaches the session; "[note]" comments are skipped.
 # This file: /home/claude/dev/kanzo/agent/dispatch/kanzo_dispatch.py (repo dwertz-at-blenko/kanzo, branch public-url)
 # Session: b1475961-06d7-40b0-9eff-f2b47896b6bb · vps as claude · cwd /home/claude/dev
 """kanzo-dispatch: delegate a card to Claude by commenting on it.
 
-A new board comment by Dave (author `me`) that starts with `@claude` starts one background
-Claude Code session for that card, in the card's repo folder. While the card has that session
-and is not done, every later comment by Dave on it goes to the same session. `@claude stop`
+A new board comment by Dave (author `me`) starts one background
+Claude Code session for that card, in the card's repo folder. While the card has that session,
+every later comment by Dave on it goes to the same session. `@claude stop`
 stops it. The dispatcher comments on the card as `kanzo-dispatch` through the board's MCP
 endpoint, so its own comments never look like Dave's and never trigger it.
 
@@ -41,6 +42,7 @@ DAVE = "me"
 BOARD_ACTOR = "board"
 TRIGGER = re.compile(r"^\s*@claude\b", re.I)
 STOP = re.compile(r"^\s*@claude\s+stop\b", re.I)
+NOTE = re.compile(r"^\s*\[note\]", re.I)          # the board's "do not send to agent" box
 BG_ID = re.compile(r"backgrounded\W+([0-9a-f]{8})")
 SECRET_NAME = re.compile(r"TOKEN|SECRET|PASSW|CREDENTIAL|API_?KEY|BEARER|COOKIE|BWS_", re.I)
 LONG_OPAQUE = re.compile(r"[A-Za-z0-9_\-+/=]{32,}")
@@ -503,7 +505,7 @@ class Dispatcher:
             else:
                 del self.st["cards"][tid]
                 self.say(tid, "A start for this card was cut off by a dispatcher restart and no session "
-                              "showed up. Comment `@claude` again to retry.", human=True)
+                              "showed up. Comment again to retry.", human=True)
             self.save()
 
     # one pass
@@ -549,6 +551,8 @@ class Dispatcher:
         tid, body = str(t["id"]), c["body"]
         card = self.st["cards"].get(tid)
         queued = any(q["task"] == tid for q in self.st["queue"])
+        if NOTE.match(body):                             # a note to self: never reaches an agent
+            return
         if STOP.match(body):
             if card:
                 self.stop_card(tid, card)
@@ -560,15 +564,13 @@ class Dispatcher:
             else:
                 self.say(tid, "No session is attached to this card.")
             return
-        if card and t["status"] != "done":
+        if card:                                         # one session per card, done or not
             card.setdefault("pending", []).append(c["id"])
             card.setdefault("pending_since", now())
             self.save()
             return
-        if not TRIGGER.match(body) or queued:
+        if queued:
             return
-        if card:                                         # a done card asked again: a fresh session
-            self.stop_card(tid, card)
         self.request(tid, c["id"])
 
     def stop_card(self, tid, card):
@@ -613,7 +615,7 @@ class Dispatcher:
                 return d, None
         want = os.path.join(self.dev_root, repos[0].split("/")[-1])
         return None, (f"There is no checkout of {repos[0]} on this box (looked for {want}), so no session "
-                      f"was started. Clone it there, then comment `@claude` again.")
+                      f"was started. Clone it there, then comment again.")
 
     def start(self, tid, comment_id, why=None):
         data = self.board.task(tid)
@@ -724,7 +726,7 @@ class Dispatcher:
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(description="Start a Claude session from a card when Dave comments @claude.")
+    p = argparse.ArgumentParser(description="Start a Claude session from a card when Dave comments on it.")
     mode = p.add_mutually_exclusive_group(required=True)
     mode.add_argument("--once", action="store_true", help="one pass, then exit")
     mode.add_argument("--loop", action="store_true", help="keep watching")

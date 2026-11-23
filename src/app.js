@@ -1139,10 +1139,13 @@ $("#p-url").addEventListener("blur", (e) => {
 
 $("#p-comment-form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const body = $("#p-comment").value.trim();
-  if ((!body && !pending.length) || !panelTask) return;
+  const text = $("#p-comment").value.trim();
+  if ((!text && !pending.length) || !panelTask) return;
+  // "[note]" is what kanzo-dispatch skips: a comment for the record, not for an agent.
+  const body = $("#p-note").checked ? `[note] ${text}` : text;
   try {
     await api("POST", `/tasks/${panelTask.id}/comments`, { body, images: pending });
+    $("#p-note").checked = false;
     if (fresh === panelTask.id) fresh = null;
     $("#p-comment").value = "";
     pending = [];
