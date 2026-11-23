@@ -7,11 +7,10 @@ background Claude Code session per card.
 
 | Comment by Dave (author `me`) | Result |
 |---|---|
-| Starts with `@claude` (any case, leading spaces ok), card has no session | Starts a session for the card and comments "Picked up" with the app link and the folder |
-| Any comment, card has a session and is not done | Typed into that same session; no `@claude` needed |
+| Any comment, card has no session (a leading `@claude` is optional and dropped) | Starts a session for the card and comments "Picked up" with the app link and the folder |
+| Any comment, card has a session (done or not) | Typed into that same session; if it is gone, a new one starts from the card's history |
 | `@claude stop` | `claude stop` on the card's session, then a comment saying so |
-| `@claude` on a done card | Stops the old session, starts a fresh one |
-| A plain comment on a card with no session | Nothing |
+| Starts with `[note]` (the board's "Do not send to agent" box adds it) | Nothing: no session starts and an attached session is not told |
 
 Comments by anyone else (agents, the dispatcher itself) never start or reach a session.
 
