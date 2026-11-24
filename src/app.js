@@ -399,7 +399,7 @@ function renderNav() {
             ...(folded ? [] : sec.projects.map(item))];
   });
   $("#nav-sections").replaceChildren(...sections.flat(),
-    find && !shown.length ? el("p", { class: "nav-none" }, "No project matches.") : null);
+    ...(find && !shown.length ? [el("p", { class: "nav-none" }, "No project matches.")] : []));
   document.title = waiting ? `(${waiting}) Kanzo` : "Kanzo";
 }
 
