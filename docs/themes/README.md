@@ -34,7 +34,12 @@ The board's DOM carries attributes for themes and agents alike; themes style the
 | `.card` | `data-id`, `data-task-id`, `data-agent="task-card"`, `data-status`, `data-project`, `data-tags` (space separated), `data-human="true"` when human, `data-alert="red"` (tags blocked, urgent, p0) or `"amber"` (p1, bug), `data-updated` (date), `data-comments` |
 | `.card .num` | `data-updated`, for themes that show the date in the card's meta row |
 | `.tag` | `data-tag` |
-| `.nav .item` | `data-agent="project"`, `data-project-id` |
+| `.nav .item` | `data-agent="project"`, `data-project-id`; its link holds `.fresh`, `.agent-dot` and `.pill` (cards in review), then `.star` (`.on` when starred) beside `.more` |
+| `.nav .sec` | `data-section` (`starred`, `review`, `active`, `parked`, `empty`), `aria-expanded` |
+| `.card` agent marker | `data-agent-state`: `working`, `attached` (queued or starting), `idle`, `warn` (blocked, silent, failed, unreachable); drawn by `::before` |
+| `#view` (Inbox, Agents) | `.view-group` with `data-group` (`waiting`, `review`, `finished`), `.view-row`; a session row is `.view-row.session` with `data-state`, and so is its `.state` label |
+| `#p-agent` | `data-state`: the card's agent state, `none`, or `down` when the watcher is not running |
+| `.comment .delivery` | `data-state`: a delivery state from `dispatch/status.json`, `answered` or `note`; `.comment.dispatch` and `.comment.command` mark the dispatcher's comments and the `@claude` commands |
 | `#theme-bar` | `data-agent="theme-switcher"`; each `.theme-tab` has `data-theme-pick` and `aria-pressed` |
 | `<html>` | `data-theme`, `data-theme-preview` while previewing, `data-hide` (hidden properties) |
 

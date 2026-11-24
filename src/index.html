@@ -15,6 +15,9 @@
   --text: #0d0d0d; --muted: #5d5d5d; --faint: #8f8f8f; --border: #e5e5e5; --card-border: #ebebeb;
   --accent: #0d0d0d; --accent-text: #ffffff; --danger: #dc2626; --danger-bg: rgba(220, 38, 38, .08);
   --link: #2563eb; --code: #f2f2f2; --shadow: 0 10px 30px rgba(0,0,0,.12);
+  /* Agents (teal), what waits on the human (orange), trouble (amber) and done (green). */
+  --agent: #0d9488; --review: #c2410c; --review-bg: rgba(249, 115, 22, .14); --warn: #b45309;
+  --warn-bg: rgba(245, 158, 11, .14); --ok: #047857; --ok-bg: rgba(16, 185, 129, .12); --star: #d97706;
   color-scheme: light dark;
 }
 @media (prefers-color-scheme: dark) {
@@ -24,6 +27,8 @@
     --text: #ececec; --muted: #a1a1a1; --faint: #6e6e6e; --border: #1f1f1f; --card-border: transparent;
     --accent: #ffffff; --accent-text: #000000; --danger: #f87171; --danger-bg: rgba(248, 113, 113, .1);
     --link: #7ab7ff; --code: #1c1c1c; --shadow: 0 10px 30px rgba(0,0,0,.6);
+    --agent: #2dd4bf; --review: #fb923c; --review-bg: rgba(251, 146, 60, .16); --warn: #fbbf24;
+    --warn-bg: rgba(251, 191, 36, .12); --ok: #34d399; --ok-bg: rgba(52, 211, 153, .12); --star: #fbbf24;
   }
 }
 * { box-sizing: border-box; scrollbar-width: thin; scrollbar-color: var(--active) transparent; }
@@ -491,14 +496,167 @@ label.setting { cursor: pointer; }
 .howto a { color: var(--link); }
 .howto code { padding: 1px 5px; border-radius: 4px; background: var(--code); font-size: 12px; }
 .settings-pane .howto p { font-size: 13px; }
+/* Sidebar: views, the find box, then foldable sections of projects. */
+.nav-views, .nav-sections { display: flex; flex-direction: column; gap: 2px; }
+input.nav-find { margin: 10px 0 2px; padding: 8px 10px; border-radius: 10px; font-size: 13px; }
+.nav .sec {
+  display: flex; align-items: center; gap: 6px; width: 100%; margin-top: 10px; padding: 4px 10px; border: 0;
+  border-radius: 8px; background: none; color: var(--faint); font-size: 12px; text-align: left; white-space: nowrap;
+}
+.nav .sec:hover, .nav .sec:focus-visible { background: var(--hover); color: var(--text); }
+.nav .sec .caret::before { content: "\25B8"; display: inline-block; font-size: 10px; transition: transform .15s; }
+.nav .sec[aria-expanded="true"] .caret::before { transform: rotate(90deg); }
+.nav .sec .name { flex: 1; }
+.nav .sec .count { font-variant-numeric: tabular-nums; }
+.nav-none { margin: 8px 10px; color: var(--faint); font-size: 13px; }
+.nav a .fresh { width: 6px; height: 6px; border-radius: 50%; background: var(--link); flex: none; }
+.nav a .agent-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--agent); flex: none; animation: pulse 1.4s ease-in-out infinite; }
+.nav a .pill {
+  flex: none; min-width: 20px; padding: 0 6px; border-radius: 99px; background: var(--review-bg); color: var(--review);
+  font-size: 11.5px; font-weight: 600; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums;
+}
+.nav .star {
+  position: absolute; right: 34px; top: 50%; transform: translateY(-50%); display: none;
+  width: 28px; height: 28px; padding: 6px; border: 0; border-radius: 8px; background: none; color: var(--faint);
+}
+.nav .star .icon svg { width: 16px; height: 16px; }
+.nav .star:hover { color: var(--text); }
+.nav .star.on { color: var(--star); }
+.nav .star.on svg { fill: currentColor; }
+.nav .item:hover .star, .nav .item:focus-within .star, .nav .item.menu-open .star { display: block; }
+.nav .item:hover a, .nav .item:focus-within a, .nav .item.menu-open a { padding-right: 68px; }
+
+/* Inbox and Agents: a list in place of the columns. */
+.view { flex: 1; min-height: 0; overflow-y: auto; padding: 0 24px 24px; }
+.view > * { max-width: 880px; }
+.view-group { margin: 0 0 22px; }
+.view-group > h2, .view-group > summary {
+  display: flex; align-items: center; gap: 8px; margin: 0 0 8px; color: var(--muted); font-size: 13px; font-weight: 600;
+}
+.view-group > summary { cursor: pointer; }
+.view-group .count { color: var(--faint); font-weight: 400; }
+.view-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 2px 12px; margin-bottom: 6px;
+  padding: 10px 12px; border: 1px solid var(--card-border); border-radius: 14px; background: var(--card); cursor: pointer;
+}
+.view-row:hover, .view-row:focus-visible { background: var(--card-hover); }
+.view-row.session, .view-row.queued { cursor: default; }
+.view-row .line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.view-row .title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.view-row .key { flex: none; color: var(--faint); }
+.view-row .last {
+  grid-column: 1; min-width: 0; overflow: hidden; color: var(--muted); font-size: 13px; text-overflow: ellipsis; white-space: nowrap;
+}
+.view-row .last b { color: var(--text); font-weight: 500; }
+.view-row .done { grid-column: 2; grid-row: 1 / span 2; display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; }
+.view-row .done .icon svg { width: 15px; height: 15px; }
+.chip-project {
+  display: inline-flex; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0; max-width: 34%;
+  padding: 1px 9px 1px 7px; border-radius: 99px; background: var(--hover); color: var(--muted); font-size: 12px; white-space: nowrap;
+}
+.chip-project > span:last-child { overflow: hidden; text-overflow: ellipsis; }
+.chip-project .dot, .card-link .dot { width: 6px; height: 6px; }
+.view-link {
+  display: inline-flex; align-items: center; gap: 8px; margin: 0 0 22px; padding: 6px 10px; border: 0; border-radius: 10px;
+  background: none; color: var(--link);
+}
+.view-link:hover, .view-link:focus-visible { background: var(--hover); }
+.view-link .icon svg, .watcher .icon svg { width: 16px; height: 16px; }
+.view-empty { margin: 48px auto; color: var(--muted); text-align: center; }
+.watcher { display: inline-flex; align-items: center; gap: 8px; margin: 0 0 18px; padding: 6px 12px; border-radius: 99px; font-size: 13px; }
+.watcher.ok { background: var(--ok-bg); color: var(--ok); }
+.watcher.ok .dot { background: var(--ok); }
+.watcher.down { border-radius: 12px; background: var(--warn-bg); color: var(--warn); font-weight: 500; }
+.session .state {
+  display: inline-flex; align-items: center; gap: 6px; flex: none; min-width: 72px; color: var(--muted);
+  font-size: 12px; text-transform: capitalize;
+}
+.state .dot, .agent-strip > .dot { background: var(--faint); }
+.state[data-state="working"] { color: var(--agent); }
+.state[data-state="working"] .dot, .agent-strip[data-state="working"] > .dot { background: var(--agent); animation: pulse 1.4s ease-in-out infinite; }
+.state[data-state="idle"] .dot { background: var(--link); }
+.state[data-state="blocked"] { color: var(--warn); }
+.state[data-state="blocked"] .dot { background: var(--warn); }
+.session .folder, .session .tokens { flex: none; color: var(--faint); }
+.session .links { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 4px; font-size: 13px; }
+.card-link { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; color: var(--text); text-decoration: none; }
+.card-link .mono { flex: none; color: var(--muted); }
+.card-link .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-link:hover .title { text-decoration: underline; }
+.open-claude, .agent-strip .session a { color: var(--link); text-decoration: none; }
+.open-claude:hover, .agent-strip .session a:hover { text-decoration: underline; }
+
+/* The card panel's agent strip, and what became of each of the human's comments. */
+.agent-strip {
+  display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px 10px; margin: 4px 16px 4px 20px;
+  padding: 8px 10px 8px 12px; border-radius: 12px; background: var(--field); font-size: 13px;
+}
+.agent-strip > .dot { margin-top: 6px; }
+.agent-strip .what { flex: 1 1 200px; min-width: 0; }
+.agent-strip .detail { color: var(--muted); overflow-wrap: anywhere; }
+.agent-strip .session { display: flex; gap: 10px; min-width: 0; color: var(--muted); }
+.agent-strip .session .mono { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-strip .session a { flex: none; }
+.agent-strip .actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; margin-left: auto; }
+.agent-strip .confirm > span { font-weight: 500; }
+.agent-strip .btn { padding: 4px 12px; font-size: 13px; }
+.agent-strip:is([data-state="queued"], [data-state="starting"]) > .dot { background: var(--agent); }
+.agent-strip[data-state="idle"] > .dot { background: var(--link); }
+.agent-strip:is([data-state="blocked"], [data-state="silent"], [data-state="unreachable"]) > .dot { background: var(--warn); }
+.agent-strip:is([data-state="failed"], [data-state="down"]) { background: var(--warn-bg); }
+.agent-strip:is([data-state="failed"], [data-state="down"]) > .dot { background: var(--warn); }
+.agent-warn { padding: 10px 14px 0; color: var(--warn); font-size: 12px; }
+.comment .note-tag { padding: 0 6px; border-radius: 99px; background: var(--hover); color: var(--muted); font-size: 11px; line-height: 16px; }
+.comment.dispatch { padding: 6px 0; }
+.comment.dispatch .md { color: var(--muted); font-size: 13px; }
+.comment.dispatch .who b { color: var(--muted); font-weight: 500; }
+.comment.command { display: flex; align-items: center; gap: 6px; padding: 4px 0; color: var(--faint); font-size: 12px; }
+.comment.command .icon svg { width: 14px; height: 14px; }
+.comment.command { flex-wrap: wrap; }
+.comment.command .delivery { order: 1; flex-basis: 100%; margin: 0 0 0 20px; }
+.comment .delivery { display: flex; align-items: center; gap: 6px; margin-top: 4px; color: var(--faint); font-size: 12px; }
+.comment .delivery::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
+.delivery:is([data-state="started"], [data-state="delivered"], [data-state="command"]) { color: var(--agent); }
+.delivery[data-state="answered"] { color: var(--ok); }
+.delivery:is([data-state="failed"], [data-state="held"]) { color: var(--warn); }
+
+/* A card an agent holds: a dot on its left edge, drawn outside the layout so nothing moves. */
+.card { position: relative; }
+.card[data-agent-state]::before {
+  content: ""; position: absolute; left: -4px; top: 13px; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--agent); box-shadow: 0 0 0 2px var(--bg); pointer-events: none;
+}
+.card[data-agent-state="working"]::before { animation: pulse 1.4s ease-in-out infinite; }
+.card[data-agent-state="idle"]::before { background: var(--link); }
+.card[data-agent-state="warn"]::before { background: var(--warn); }
+@media (hover: none) {
+  .nav .star { display: block; }
+  .nav .more, .nav .star { width: 36px; height: 36px; padding: 9px; }
+  .nav .star { right: 42px; }
+  .nav .item a { padding-right: 82px; }
+  .nav .sec, input.nav-find, .agent-strip .btn, .view-row .done, .view-link { min-height: 36px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .nav a .agent-dot, .state .dot, .agent-strip > .dot, .card[data-agent-state]::before { animation: none; }
+}
 [hidden] { display: none !important; }
 
 @media (max-width: 700px) {
   body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
   aside { border-right: 0; border-bottom: 1px solid var(--border); padding: 8px; }
   .brand { padding-bottom: 6px; }
-  .nav { flex-direction: row; overflow-x: auto; }
+  /* Views and sections each scroll sideways, with the find box between them. */
+  .nav { flex: none; gap: 6px; }
+  .nav-views, .nav-sections { flex-direction: row; overflow-x: auto; }
+  input.nav-find { margin: 0; }
+  .nav .sec { width: auto; flex: none; margin: 0; padding: 8px 10px; }
+  .nav-sections .item { flex: none; }
   .nav a { width: auto; }
+  .view { padding: 0 12px 12px; }
+  /* The title takes its own line under the project and key. */
+  .view-row .line { flex-wrap: wrap; row-gap: 2px; }
+  .view-row .line > .title { flex-basis: 100%; order: 1; }
+  .chip-project { max-width: 60%; }
   .nav .label { display: none; }
   #new-project-toggle { display: none; }
   .theme-bar { display: none; }
@@ -520,7 +678,11 @@ label.setting { cursor: pointer; }
     <button class="ghost" id="search-open" title="Search (/ or ⌘K)" aria-label="Search tasks"><span class="icon" data-icon="search"></span></button>
   </div>
   <button class="ghost" id="new-project-toggle"><span class="icon" data-icon="newProject"></span>New project</button>
-  <nav class="nav" id="nav"></nav>
+  <nav class="nav" id="nav">
+    <div class="nav-views" id="nav-views"></div>
+    <input type="search" class="field nav-find" id="nav-find" placeholder="Find a project" aria-label="Find a project" autocomplete="off" spellcheck="false">
+    <div class="nav-sections" id="nav-sections"></div>
+  </nav>
   <button class="ghost update" id="update" hidden><span class="icon" data-icon="update"></span><span id="update-label"></span></button>
   <button class="ghost" id="activity-open" title="What happened on the board, and when"><span class="icon" data-icon="activity"></span>Activity</button>
   <button class="ghost" id="settings" aria-haspopup="menu"><span class="icon" data-icon="settings"></span>Settings</button>
@@ -544,6 +706,7 @@ label.setting { cursor: pointer; }
     <button class="btn primary" id="new-task" title="New task (n)" hidden><span class="icon" data-icon="plus"></span>New task</button>
   </header>
   <div class="columns" id="columns"></div>
+  <div class="view" id="view" hidden></div>
 </main>
 
 <div class="panel" id="panel" data-agent="task-panel" aria-hidden="true">
@@ -554,6 +717,7 @@ label.setting { cursor: pointer; }
     <button class="ghost danger" id="p-delete" title="Delete task" aria-label="Delete task"><span class="icon" data-icon="trash"></span></button>
     <button class="ghost" id="p-close" title="Close (Esc)" aria-label="Close"><span class="icon" data-icon="close"></span></button>
   </div>
+  <div class="agent-strip" id="p-agent" role="status" hidden></div>
   <div class="body">
     <textarea class="inline title-input" id="p-title" rows="1" spellcheck="false" placeholder="Task title"></textarea>
     <div class="props">
@@ -574,6 +738,7 @@ label.setting { cursor: pointer; }
       <h3>Comments <span class="count" id="p-comment-count"></span></h3>
       <div id="p-comments"></div>
       <form class="composer" id="p-comment-form">
+        <div class="agent-warn" id="p-agent-warn" hidden>Agent watcher is not running: this comment is not sent to an agent.</div>
         <div class="thumbs" id="p-pending"></div>
         <textarea id="p-comment" rows="2" placeholder="Add a comment"></textarea>
         <button class="send" id="p-send" type="submit" title="Send (⌘↵)" aria-label="Send comment" disabled><span class="icon" data-icon="send"></span></button>

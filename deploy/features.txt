@@ -17,7 +17,15 @@ board page             | /                    | 200     | id="activity-dialog"
 theme engine           | /                    | 200     | <meta name="kanzo-themes"
 board loads the stars  | /                    | 200     | <script src="/stars.js"></script>
 note box               | /                    | 200     | id="p-note"
+project find box       | /                    | 200     | id="nav-find"
+inbox and agents view  | /                    | 200     | id="view"
+card agent strip       | /                    | 200     | id="p-agent"
 board script           | /app.js              | 200     | loadActivity
+sidebar sections       | /app.js              | 200     | function navSections
+inbox view             | /app.js              | 200     | function renderInbox
+agents view            | /app.js              | 200     | function renderAgents
+comment delivery lines | /app.js              | 200     | function paintDelivery
+card agent markers     | /app.js              | 200     | function paintTiles
 stars switch           | /app.js              | 200     | kanzoStars
 warp stars             | /stars.js            | 200     | window.kanzoStars
 theme preview          | /theme.js            | 200     | dataset.theme
