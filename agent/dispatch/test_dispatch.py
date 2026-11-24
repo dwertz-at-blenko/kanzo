@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-# Version: v3 · created 2026-11-21 13:26 EST · updated 2026-11-24
+# Version: v4 · created 2026-11-21 13:26 EST · updated 2026-11-24
 # Changes: v1 tests for kanzo-dispatch against a throwaway board and a fake claude.
 #          v2 2026-11-23 owner tests: adopt the live session already on a card, a fake herdr for panes.
 #          v3 2026-11-24 status.json, receipts, nudge and flag, burst guard, resume (the fake claude
 #             takes `--bg --resume`), idle stop, `@claude start`, pictures in a follow-up.
+#          v4 2026-11-24 Web Push against a fake push service on loopback (class Push); the fake claude
+#             records which key-like variable names it inherited.
 # This file: /home/claude/dev/kanzo/agent/dispatch/test_dispatch.py (repo dwertz-at-blenko/kanzo, branch public-url)
 # Session: b1475961-06d7-40b0-9eff-f2b47896b6bb · vps as claude · cwd /home/claude/dev
 """kanzo-dispatch against a real, throwaway board and a fake claude.
@@ -16,6 +18,10 @@ lists panes from panes.json and its `agent prompt` writes to the transcript the 
 
     KANZO_TEST_PORT=8196 python3 -W error::ResourceWarning agent/dispatch/test_dispatch.py
 """
+import base64
+import functools
+from http import client as http_client
+from http import server as http_server
 import json
 import os
 import pathlib
@@ -24,8 +30,10 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
+import urllib.parse
 import urllib.request
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -43,7 +51,8 @@ d = os.environ["FAKE_DIR"]
 reg = os.path.join(d, "agents.json")
 args = sys.argv[1:]
 with open(os.path.join(d, "calls.jsonl"), "a") as f:
-    f.write(json.dumps({"argv": args, "cwd": os.getcwd()}) + "\n")
+    f.write(json.dumps({"argv": args, "cwd": os.getcwd(),
+                        "env": sorted(k for k in os.environ if "VAPID" in k or "PRIVATE" in k)}) + "\n")
 agents = json.load(open(reg)) if os.path.exists(reg) else []
 def save():
     json.dump(agents, open(reg, "w"))
@@ -1022,6 +1031,242 @@ class Delegation(Base):
                       "(1 picture(s) attached to this comment: get_task on the card lists the file paths, read them.)", t)
         self.assertNotIn(files[0], t)
         self.assertNotIn("picture", kd.follow_up("x#1", [{"id": 5, "body": "b"}], images=[{"comment_id": 4}]))
+
+
+class FakePushService:
+    """A push service on a loopback port: records each request, answers 201 or what `status` says."""
+
+    def __init__(self):
+        self.requests, self.status = [], {}
+        outer = self
+
+        class Handler(http_server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                n = int(self.headers.get("Content-Length") or 0)
+                outer.requests.append({"path": self.path, "headers": {k.lower(): v for k, v in self.headers.items()},
+                                       "body": self.rfile.read(n) if n else b""})
+                self.send_response(outer.status.get(self.path, 201))
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        self.server = http_server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        # The dispatcher's own sender, with only the connection pointed here instead of the real host.
+        self.post = functools.partial(kd.push_post, connect=lambda host, port, timeout: http_client.HTTPConnection(
+            "127.0.0.1", self.server.server_port, timeout=timeout))
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(5)
+
+
+def new_key(curve=None):
+    """A throwaway P-256 key, made in this process only: SEC1 DER, base64, as the README says."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    key = ec.generate_private_key(curve or ec.SECP256R1())
+    der = key.private_bytes(serialization.Encoding.DER, serialization.PrivateFormat.TraditionalOpenSSL,
+                            serialization.NoEncryption())
+    return base64.b64encode(der).decode()
+
+
+def unb64(s):
+    return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+
+
+class Push(Base):
+    """Web Push: content-free, signed, at most one per browser per pass and one round per 30 s."""
+
+    def setUp(self):
+        super().setUp()
+        self.fake_push = FakePushService()
+        self.addCleanup(self.fake_push.close)
+        self.key = new_key()
+        self.p = kd.Push(self.key, os.path.join(self.kanzo_home, "kanzo.db"), post=self.fake_push.post, threaded=False)
+        self.d = self.dispatcher(push=self.p)
+        self.subscribe(1)
+        self.d.tick()                                    # the first pass after a start only records
+
+    def subscribe(self, n):
+        http("POST", "/api/push/subscribe", {"endpoint": f"https://fcm.googleapis.com/fcm/send/fake{n}",
+                                             "keys": {"p256dh": "BFake", "auth": "fake"}, "label": "Test phone"})
+
+    def answer(self, title="Answer me"):
+        """A card in review whose last comment is an agent's: it waits on Dave."""
+        tid = self.card(title=title)
+        http("PATCH", f"/api/tasks/{tid}", {"status": "review"})
+        kd.Board(URL, client="claude").comment(tid, "Done, see the pull request.")
+        return tid
+
+    def status(self):
+        return json.loads(pathlib.Path(self.state).with_name("status.json").read_text())
+
+    def test_first_pass_is_silent(self):
+        self.answer()
+        p = kd.Push(self.key, os.path.join(self.kanzo_home, "kanzo.db"), post=self.fake_push.post, threaded=False)
+        d = self.dispatcher(push=p)
+        d.tick()
+        self.assertEqual(self.fake_push.requests, [])
+        self.assertEqual(self.status()["push"]["subscriptions"], 1)
+
+    def test_a_new_answer_sends_one_signed_empty_push(self):
+        from cryptography.exceptions import InvalidSignature
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
+        self.answer()
+        self.d.tick()
+        self.assertEqual(len(self.fake_push.requests), 1)
+        r = self.fake_push.requests[0]
+        h = r["headers"]
+        self.assertEqual((r["path"], r["body"]), ("/fcm/send/fake1", b""))
+        self.assertEqual((h["ttl"], h["urgency"], h["topic"], h["content-length"]), ("3600", "normal", "kanzo-inbox", "0"))
+        self.assertNotIn("content-type", h)
+        auth = h["authorization"]
+        self.assertTrue(auth.startswith("vapid t="), auth)
+        jwt, k = auth[len("vapid t="):].split(", k=")
+        self.assertEqual(k, self.p.public)
+        self.assertEqual(self.status()["push_key"], k)
+        head, claims, sig = jwt.split(".")
+        self.assertEqual(json.loads(unb64(head)), {"typ": "JWT", "alg": "ES256"})
+        c = json.loads(unb64(claims))
+        self.assertEqual((c["aud"], c["sub"]), ("https://fcm.googleapis.com", "https://kanzo.blenko.cloud"))
+        self.assertAlmostEqual(c["exp"], time.time() + 12 * 3600, delta=60)
+        raw = unb64(sig)
+        self.assertEqual(len(raw), 64, "raw r||s, not DER")
+        public = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), unb64(k))
+        der = encode_dss_signature(int.from_bytes(raw[:32], "big"), int.from_bytes(raw[32:], "big"))
+        public.verify(der, f"{head}.{claims}".encode(), ec.ECDSA(hashes.SHA256()))
+        with self.assertRaises(InvalidSignature):
+            public.verify(der, f"{head}.{claims}x".encode(), ec.ECDSA(hashes.SHA256()))
+        st = self.status()["push"]
+        self.assertEqual((st["on"], st["subscriptions"], st["last_error"]), (True, 1, ""))
+        self.assertTrue(st["last_sent"])
+        for path in (self.state, pathlib.Path(self.state).with_name("status.json")):
+            self.assertNotIn("fake1", pathlib.Path(path).read_text(), "an endpoint never leaves the database")
+
+    def test_two_answers_in_one_pass_send_one_push(self):
+        self.answer("One")
+        self.answer("Two")
+        self.d.tick()
+        self.assertEqual(len(self.fake_push.requests), 1)
+        self.d.tick()                                    # nothing new: nothing sent
+        self.assertEqual(len(self.fake_push.requests), 1)
+
+    def test_one_round_per_30_seconds(self):
+        self.answer("First")
+        self.d.tick()
+        self.answer("Second")
+        self.d.tick()
+        self.assertEqual(len(self.fake_push.requests), 1, "held by the 30 s floor")
+        self.p.last_round -= 31
+        self.d.tick()
+        self.assertEqual(len(self.fake_push.requests), 2, "then sent, once")
+        self.p.last_round -= 31
+        self.d.tick()
+        self.assertEqual(len(self.fake_push.requests), 2)
+
+    def test_one_push_per_browser(self):
+        self.subscribe(2)
+        self.addCleanup(http, "POST", "/api/push/unsubscribe", {"endpoint": "https://fcm.googleapis.com/fcm/send/fake2"})
+        self.answer()
+        self.d.tick()
+        self.assertEqual(sorted(r["path"] for r in self.fake_push.requests), ["/fcm/send/fake1", "/fcm/send/fake2"])
+
+    def test_410_drops_the_browser(self):
+        self.fake_push.status["/fcm/send/fake1"] = 410
+        self.answer()
+        self.d.tick()
+        self.assertEqual(len(self.fake_push.requests), 1)
+        st = json.loads(pathlib.Path(self.state).read_text())
+        self.assertEqual(st["push_dead"], [kd.digest("https://fcm.googleapis.com/fcm/send/fake1")])
+        self.d.tick()
+        self.assertEqual(self.status()["push"]["subscriptions"], 0)
+        self.answer("Another")
+        self.p.last_round -= 31
+        self.d.tick()
+        self.assertEqual(len(self.fake_push.requests), 1, "never sent to again")
+        again = self.dispatcher(push=kd.Push(self.key, os.path.join(self.kanzo_home, "kanzo.db"),
+                                             post=self.fake_push.post, threaded=False))
+        self.assertEqual(again.push.dead, st["push_dead"], "remembered across a restart")
+
+    def test_429_backs_off(self):
+        self.fake_push.status["/fcm/send/fake1"] = 429
+        self.answer()
+        self.d.tick()
+        self.assertEqual(len(self.fake_push.requests), 1)
+        self.assertIn("HTTP 429", self.status()["push"]["last_error"])
+        self.p.last_round -= 31                          # past the floor, inside the 60 s backoff
+        self.d.tick()
+        self.assertEqual(len(self.fake_push.requests), 1)
+        self.fake_push.status.clear()
+        self.p.last_round -= 31
+        h = kd.digest("https://fcm.googleapis.com/fcm/send/fake1")
+        self.p.backoff[h] = (0, 60)                      # the backoff has run out
+        self.d.tick()
+        self.assertEqual(len(self.fake_push.requests), 2, "still owed, sent once the wait is over")
+        self.assertEqual(self.status()["push"]["last_error"], "")
+
+    def test_no_key_or_a_bad_key_means_off(self):
+        db = os.path.join(self.kanzo_home, "kanzo.db")
+        from cryptography.hazmat.primitives.asymmetric import ec
+        for raw in ("", "not base64 at all", base64.b64encode(b"not a key").decode(), new_key(ec.SECP384R1())):
+            p = kd.Push(raw, db, post=self.fake_push.post, threaded=False)
+            self.assertFalse(p.on)
+            d = self.dispatcher(push=p)
+            d.tick()
+            self.answer()
+            d.tick()
+            st = self.status()
+            self.assertEqual((st["push_key"], st["push"]["on"]), ("", False))
+        self.assertEqual(self.fake_push.requests, [])
+        self.assertFalse(kd.Push(self.key, db, off="--no-push").on)
+
+    def test_dry_run_sends_nothing(self):
+        d = self.dispatcher(push=self.p, dry_run=True)
+        self.answer()
+        d.tick()
+        self.assertEqual(self.fake_push.requests, [])
+
+    def test_a_hanging_push_service_does_not_hold_up_the_pass(self):
+        gate = threading.Event()
+        self.addCleanup(gate.set)
+
+        def slow(url, headers, timeout):
+            gate.wait(timeout)
+            return 201, None
+        p = kd.Push(self.key, os.path.join(self.kanzo_home, "kanzo.db"), post=slow)
+        d = self.dispatcher(push=p)
+        d.tick()
+        self.answer()
+        began = time.time()
+        d.tick()
+        self.assertLess(time.time() - began, 5)
+        gate.set()
+        p.join()
+        self.assertTrue(self.status()["push"]["on"])
+
+    def test_the_key_leaves_the_environment_and_never_reaches_claude(self):
+        os.environ[kd.PUSH_KEY_ENV] = self.key
+        self.addCleanup(os.environ.pop, kd.PUSH_KEY_ENV, None)
+        self.assertNotIn(kd.PUSH_KEY_ENV, kd.child_env(), "filtered by name even before it is taken")
+        rc = kd.main(["--once", "--dry-run", "--board", URL, "--state", os.path.join(self.fake_dir, "main", "state.json"),
+                      "--db", os.path.join(self.kanzo_home, "kanzo.db"), "--claude", self.fake])
+        self.assertEqual(rc, 0)
+        self.assertNotIn(kd.PUSH_KEY_ENV, os.environ, "main() takes it out first")
+        os.environ[kd.PUSH_KEY_ENV] = self.key           # as if it were still there: take it, then start claude
+        self.assertEqual(kd.take_push_key(), self.key)
+        tid = self.card()
+        self.started(tid)
+        calls = self.calls("--bg")
+        self.assertTrue(calls)
+        self.assertTrue(all(c["env"] == [] for c in calls), calls)
+        self.assertNotIn(self.key, pathlib.Path(self.fake_dir, "calls.jsonl").read_text())
 
 
 if __name__ == "__main__":

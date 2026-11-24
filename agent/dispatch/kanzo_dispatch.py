@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Version: v4 · created 2026-11-21 13:26 EST · updated 2026-11-24
+# Version: v5 · created 2026-11-21 13:26 EST · updated 2026-11-24
 # Changes: v1 watch the board for Dave's @claude comments and run one background Claude session per card.
 #          v2 2026-11-23 any comment by Dave starts or reaches the session; "[note]" comments are skipped.
 #          v3 2026-11-23 a comment goes to the live session already working the card (background or a
@@ -8,6 +8,8 @@
 #             heartbeat); `@claude start`; one nudge, then a flag, when the agent stays silent; burst
 #             guard; resume an ended session before a cold start; stop idle sessions on done cards;
 #             follow-ups say when a comment has pictures.
+#          v5 2026-11-24 Web Push: one empty signed push per browser when an agent answers (class Push),
+#             the key taken out of the environment at start, `push_key` and `push` in status.json, --no-push.
 # This file: /home/claude/dev/kanzo/agent/dispatch/kanzo_dispatch.py (repo dwertz-at-blenko/kanzo, branch public-url)
 # Session: b1475961-06d7-40b0-9eff-f2b47896b6bb · vps as claude · cwd /home/claude/dev
 """kanzo-dispatch: delegate a card to Claude by commenting on it.
@@ -30,23 +32,30 @@ Runs: `claude --bg --name <name> <brief>`, `claude --bg --resume <session id> <t
 type a follow-up into an idle background session, and `herdr agent list` /
 `herdr agent prompt <pane> <text>` for a session in a terminal pane.
 Writes: state.json and, every pass, status.json beside it for the board.
+Sends: with KANZO_VAPID_PRIVATE_KEY set, an empty signed Web Push to each browser stored on the
+board when a card newly waits on Dave (class Push); subscriptions read read-only from the database.
 
     kanzo_dispatch.py --once                 # one pass
     kanzo_dispatch.py --loop --interval 5    # the service
     kanzo_dispatch.py --once --dry-run       # say what it would do, change nothing
 """
 import argparse
+import base64
 import datetime
 import glob
+import hashlib
+import http.client
 import json
 import logging
 import os
 import re
 import shutil
 import sqlite3
+import ssl
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -61,7 +70,7 @@ NEW = re.compile(r"^\s*@claude\s+new\b", re.I)    # skip the owner search: a sep
 START = re.compile(r"^\s*@claude\s+start\b", re.I)  # start an agent, the card is the brief
 NOTE = re.compile(r"^\s*\[note\]", re.I)          # the board's "do not send to agent" box
 BG_ID = re.compile(r"backgrounded\W+([0-9a-f]{8})")
-SECRET_NAME = re.compile(r"TOKEN|SECRET|PASSW|CREDENTIAL|API_?KEY|BEARER|COOKIE|BWS_", re.I)
+SECRET_NAME = re.compile(r"TOKEN|SECRET|PASSW|CREDENTIAL|API_?KEY|PRIVATE_?KEY|VAPID|BEARER|COOKIE|BWS_", re.I)
 LONG_OPAQUE = re.compile(r"[A-Za-z0-9_\-+/=]{32,}")
 PROMPT_LINE = re.compile(r"^\s*❯\s*$", re.M)
 CARD_REF = re.compile(r"[a-z0-9][a-z0-9._-]*#(\d+)")
@@ -83,6 +92,17 @@ NUDGE_AFTER = 20        # a turn that ends sooner than this after a delivery is 
 IDLE_STOP = 3600        # an idle dispatcher session on a done card is stopped after this long
 KEEP_RECEIPTS = 20      # comment receipts kept per card
 KEEP_FOR = 7 * 86400    # a card's receipts are dropped after this long untouched
+# Web Push: an empty, signed POST to each browser that asked for one (agent/dispatch/README.md, "Push").
+PUSH_KEY_ENV = "KANZO_VAPID_PRIVATE_KEY"     # base64 of a SEC1 DER P-256 private key; taken out of os.environ at start
+PUSH_SUBJECT = "https://kanzo.blenko.cloud"  # the VAPID `sub`: a URL, never an email address
+PUSH_EVERY = 30         # seconds: at most one round of pushes this often
+PUSH_TTL = 3600         # seconds the push service keeps a push for an offline phone; also how long one is owed
+PUSH_TIMEOUT = 10
+PUSH_JWT_FOR = 12 * 3600
+PUSH_BACKOFF = (60, 3600)   # first and longest wait after a 429, a 5xx or no answer
+PUSH_KEEP_DEAD = 50
+PUSH_HOSTS = ("fcm.googleapis.com", "updates.push.services.mozilla.com")
+PUSH_HOST_SUFFIXES = (".notify.windows.com", ".push.apple.com")
 NUDGE = ("Card {key}: Dave has no answer on the card yet and he reads only the card. Post your answer or "
          "your question as a card comment now with the kanzo tools, and set the card status.")
 
@@ -107,6 +127,216 @@ def scrub(text):
 def child_env():
     """The environment for claude and tmux: everything but secret-named variables."""
     return {k: v for k, v in os.environ.items() if not SECRET_NAME.search(k)}
+
+
+def take_push_key():
+    """The VAPID key, removed from the environment at once: no child process can inherit it."""
+    return os.environ.pop(PUSH_KEY_ENV, "")
+
+
+# ---------------------------------------------------------------- push
+
+def push_endpoint_ok(url):
+    """https on a known push service, no user info, no port: the board's own check, again."""
+    if not isinstance(url, str) or len(url) > 1024 or not url.startswith("https://"):
+        return False
+    if not all("!" <= ch <= "~" for ch in url):
+        return False
+    host = re.split(r"[/?#]", url[len("https://"):], maxsplit=1)[0].lower()
+    if not host or any(ch in host for ch in "@:\\"):
+        return False
+    if host in PUSH_HOSTS:
+        return True
+    for suffix in PUSH_HOST_SUFFIXES:
+        sub = host[:-len(suffix)] if host.endswith(suffix) else ""
+        if sub and not sub.startswith(".") and re.fullmatch(r"[a-z0-9.-]+", sub):
+            return True
+    return False
+
+
+def b64url(data):
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def digest(endpoint):
+    """What state.json keeps of a dead endpoint: never the endpoint itself."""
+    return hashlib.sha256(endpoint.encode()).hexdigest()[:32]
+
+
+def push_post(url, headers, timeout, connect=None):
+    """One POST with no body; (status, Retry-After). `connect` is the tests' way to a fake service."""
+    u = urllib.parse.urlsplit(url)
+    if connect is None:
+        conn = http.client.HTTPSConnection(u.hostname, u.port or 443, timeout=timeout,
+                                           context=ssl.create_default_context())
+    else:
+        conn = connect(u.hostname, u.port, timeout)
+    try:
+        conn.request("POST", (u.path or "/") + (f"?{u.query}" if u.query else ""), body=b"", headers=headers)
+        r = conn.getresponse()
+        r.read(65536)
+        return r.status, r.getheader("Retry-After")
+    finally:
+        conn.close()
+
+
+class Push:
+    """Web Push without a payload (RFC 8030, VAPID RFC 8292) to the browsers stored on the board.
+
+    The board keeps the subscriptions in its `meta` table; this reads that row read-only from the
+    database file, so no HTTP route ever hands out an endpoint. Each pass it compares the inbox's
+    `waiting` cards with the last pass: a card new there, or whose last comment moved, is news,
+    and every live browser is owed one push. A round sends at most one push per browser, at most
+    every PUSH_EVERY seconds, in a thread so a slow push service never holds up a pass."""
+
+    def __init__(self, raw_key, db_path, post=push_post, allowed=push_endpoint_ok, every=PUSH_EVERY,
+                 threaded=True, off=None):
+        self.db_path, self.post, self.allowed, self.every, self.threaded = db_path, post, allowed, every, threaded
+        self.on, self.key, self.public = False, None, ""
+        self.seen = None                # {task id: last.at} of the last pass; None until the first
+        self.owed = {}                  # browser hash -> since when it is owed a push
+        self.backoff = {}               # browser hash -> (not before, last delay)
+        self.dead = []                  # hashes of endpoints that answered 404 or 410
+        self.tokens = {}                # origin -> (JWT, exp)
+        self.count, self.last_round, self.last_sent, self.last_error = 0, 0, 0, ""
+        self.lock = threading.Lock()
+        self.thread = None
+        if off:
+            log.info("push off: %s", off)
+            return
+        if not raw_key:
+            log.info("push off: %s is not set", PUSH_KEY_ENV)
+            return
+        try:                            # the one import outside the standard library, and only for push
+            from cryptography.hazmat.primitives import hashes, serialization
+            from cryptography.hazmat.primitives.asymmetric import ec
+            from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
+        except ImportError:
+            log.info("push off: the python3 package cryptography is not installed")
+            return
+        try:
+            key = serialization.load_der_private_key(base64.b64decode("".join(raw_key.split()), validate=True), None)
+            if not isinstance(key, ec.EllipticCurvePrivateKey) or key.curve.name != "secp256r1":
+                raise ValueError
+        except Exception:               # never the value, nor a parser message about it
+            log.info("push off: %s is not a base64 DER P-256 private key", PUSH_KEY_ENV)
+            return
+        self.key, self.ec, self.hashes, self.decode = key, ec, hashes, decode_dss_signature
+        self.public = b64url(key.public_key().public_bytes(serialization.Encoding.X962,
+                                                           serialization.PublicFormat.UncompressedPoint))
+        self.on = True
+        log.info("push on")
+
+    def subscriptions(self):
+        """[(hash, endpoint)] of the stored browsers that pass the host check and are not dead."""
+        try:
+            con = sqlite3.connect(f"file:{urllib.parse.quote(self.db_path)}?mode=ro", uri=True, timeout=5)
+            try:
+                row = con.execute("SELECT value FROM meta WHERE key = 'push_subscriptions'").fetchone()
+            finally:
+                con.close()
+            subs = json.loads(row[0]) if row else []
+        except (sqlite3.Error, ValueError, TypeError):
+            self.last_error = "cannot read the subscriptions from the board's database"
+            return []
+        out = []
+        for sub in subs if isinstance(subs, list) else []:
+            endpoint = sub.get("endpoint") if isinstance(sub, dict) else None
+            if self.allowed(endpoint) and digest(endpoint) not in self.dead:
+                out.append((digest(endpoint), endpoint))
+        return out
+
+    def token(self, origin, t):
+        """The VAPID JWT for one push service, reused until an hour before it expires."""
+        cached = self.tokens.get(origin)
+        if cached and cached[1] - 3600 > t:
+            return cached[0]
+        exp = int(t) + PUSH_JWT_FOR
+        part = lambda doc: b64url(json.dumps(doc, separators=(",", ":")).encode())  # noqa: E731
+        signing = f"{part({'typ': 'JWT', 'alg': 'ES256'})}.{part({'aud': origin, 'exp': exp, 'sub': PUSH_SUBJECT})}"
+        r, s = self.decode(self.key.sign(signing.encode(), self.ec.ECDSA(self.hashes.SHA256())))
+        jwt = f"{signing}.{b64url(r.to_bytes(32, 'big') + s.to_bytes(32, 'big'))}"   # raw r||s, not DER
+        self.tokens[origin] = (jwt, exp)
+        return jwt
+
+    def check(self, inbox, dry=False):
+        """One pass: note new answers in `inbox` (GET /api/inbox) and start a round when one is due."""
+        t = now()
+        waiting = {str(i["id"]): str((i.get("last") or {}).get("at", ""))
+                   for i in (inbox or {}).get("waiting", []) if isinstance(i, dict) and "id" in i}
+        news = self.seen is not None and any(self.seen.get(k) != at for k, at in waiting.items())
+        self.seen = waiting                          # the first pass after a start only records
+        if not self.on:
+            return
+        subs = self.subscriptions()
+        with self.lock:
+            self.count = len(subs)
+            live = {h for h, _ in subs}
+            if news:
+                for h in live:
+                    self.owed.setdefault(h, t)
+            self.owed = {h: since for h, since in self.owed.items() if h in live and t - since < PUSH_TTL}
+            due = [(h, e) for h, e in subs if h in self.owed and self.backoff.get(h, (0, 0))[0] <= t]
+            busy = self.thread is not None and self.thread.is_alive()
+        if busy or not due or t - self.last_round < self.every:
+            return
+        self.last_round = t
+        if dry:
+            log.info("dry run: would push to %d browser(s)", len(due))
+            with self.lock:
+                for h, _ in due:
+                    self.owed.pop(h, None)
+            return
+        if self.threaded:
+            self.thread = threading.Thread(target=self.send, args=(due,), name="kanzo-push", daemon=True)
+            self.thread.start()
+        else:
+            self.send(due)
+
+    def send(self, due):
+        for h, endpoint in due:
+            u = urllib.parse.urlsplit(endpoint)
+            host, status, retry, err = u.hostname or "?", None, None, ""
+            try:
+                jwt = self.token(f"{u.scheme}://{u.netloc}", now())
+                status, retry = self.post(endpoint, {
+                    "Authorization": f"vapid t={jwt}, k={self.public}", "TTL": str(PUSH_TTL),
+                    "Urgency": "normal", "Topic": "kanzo-inbox", "Content-Length": "0"}, PUSH_TIMEOUT)
+            except Exception as e:      # a timeout, TLS, DNS: never the pass's problem
+                err = type(e).__name__
+            with self.lock:
+                self.result(h, host, status, retry, err)
+
+    def result(self, h, host, status, retry, err):
+        t = now()
+        if status is not None and 200 <= status < 300:
+            self.owed.pop(h, None)
+            self.backoff.pop(h, None)
+            self.last_sent, self.last_error = t, ""
+        elif status in (404, 410):
+            self.owed.pop(h, None)
+            self.dead = (self.dead + [h])[-PUSH_KEEP_DEAD:]
+            log.info("push: a browser on %s is gone (HTTP %s), dropped", host, status)
+        elif status is None or status == 429 or status >= 500:
+            delay = min(max(self.backoff.get(h, (0, 0))[1] * 2, PUSH_BACKOFF[0]), PUSH_BACKOFF[1])
+            if str(retry or "").isdigit():
+                delay = min(max(delay, int(retry)), PUSH_BACKOFF[1])
+            self.backoff[h] = (t + delay, delay)
+            self.last_error = f"{host}: {err or f'HTTP {status}'}"
+            log.warning("push to %s: %s, next try in %d s", host, err or f"HTTP {status}", delay)
+        else:
+            self.owed.pop(h, None)
+            self.last_error = f"{host}: HTTP {status}"
+            log.warning("push to %s: HTTP %s, not retried", host, status)
+
+    def join(self, timeout=30):
+        if self.thread is not None:
+            self.thread.join(timeout)
+
+    def status(self):
+        with self.lock:
+            return {"on": self.on, "subscriptions": self.count if self.on else 0,
+                    "last_sent": iso(self.last_sent) if self.last_sent else "", "last_error": self.last_error}
 
 
 # ---------------------------------------------------------------- board
@@ -684,7 +914,7 @@ class Dispatcher:
     def __init__(self, board, claude, state_path, dev_root, db_path, max_working=3, dry_run=False,
                  deliver_timeout=DELIVER_TIMEOUT, start_grace=START_GRACE, link_wait=LINK_WAIT, herdr=None,
                  status_path=None, interval=5, burst=5, idle_stop=IDLE_STOP, nudge_after=NUDGE_AFTER,
-                 refresh=SESSIONS_EVERY):
+                 refresh=SESSIONS_EVERY, push=None):
         self.board, self.claude, self.herdr = board, claude, herdr or Herdr()
         self.state_path, self.dev_root, self.db_path = state_path, dev_root, db_path
         self.max, self.dry = max_working, dry_run
@@ -695,6 +925,9 @@ class Dispatcher:
         self.failure = {"cause": None, "count": 0}
         self.halted = None              # in memory only: a restart is the reset
         self.st = self.load()
+        self.push = push
+        if push and self.st:
+            push.dead = list(self.st.get("push_dead", []))[-PUSH_KEEP_DEAD:]
         try:                            # carry rev and each card's `since` over a restart
             with open(self.status_path) as f:
                 old = json.load(f)
@@ -788,7 +1021,24 @@ class Dispatcher:
         try:
             self.step()
         finally:
+            self.push_pass()
             self.publish()                               # the heartbeat, even when the pass failed
+
+    def push_pass(self):
+        """New answers in the inbox: a push to each browser (class Push). Never fails the pass."""
+        if self.push is None or self.st is None:
+            return
+        try:
+            self.push.check(self.board.get("/api/inbox"), dry=self.dry)
+            with self.push.lock:
+                dead = list(self.push.dead)
+            if dead != self.st.get("push_dead", []):
+                self.st["push_dead"] = dead
+                self.save()
+        except BoardError:
+            pass                                         # the pass reports the board itself
+        except Exception as e:
+            log.warning("push pass failed: %s", type(e).__name__)
 
     def step(self):
         self.claude._agents = None
@@ -1374,7 +1624,9 @@ class Dispatcher:
                         "comments": {i: {"state": r["state"], "at": iso(r["at"]), "note": r.get("note", "")}
                                      for i, r in rec.get("comments", {}).items()}}
         self.since = {t: v for t, v in self.since.items() if t in cards}
+        push = self.push.status() if self.push else {"on": False, "subscriptions": 0, "last_sent": "", "last_error": ""}
         return {"interval": self.interval, "max": self.max, "sessions": list(sessions.values()), "cards": cards,
+                "push_key": self.push.public if self.push else "", "push": push,
                 "queue": [{"task": int(q["task"]), "comment": q["comment"], "at": iso(q.setdefault("at", now()))}
                           for q in st["queue"]]}
 
@@ -1400,6 +1652,7 @@ class Dispatcher:
 
 
 def main(argv=None):
+    raw_key = take_push_key()                            # first: nothing below, and no child, sees it in the environment
     p = argparse.ArgumentParser(description="Start a Claude session from a card when Dave comments on it.")
     mode = p.add_mutually_exclusive_group(required=True)
     mode.add_argument("--once", action="store_true", help="one pass, then exit")
@@ -1420,12 +1673,15 @@ def main(argv=None):
                    help="comments on more cards than this in one pass are held as a script (default 5, 0 off)")
     p.add_argument("--idle-stop", type=float, default=IDLE_STOP,
                    help="stop a dispatcher session idle this many seconds on a done card (default 3600, 0 off)")
+    p.add_argument("--no-push", action="store_true", help=f"send no Web Push, even with {PUSH_KEY_ENV} set")
     a = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    push = Push(raw_key, a.db, off="--no-push" if a.no_push else None)
+    del raw_key
     d = Dispatcher(Board(a.board), Claude(a.claude), a.state, os.path.abspath(a.dev_root), a.db,
                    max_working=a.max, dry_run=a.dry_run, herdr=Herdr(a.herdr), status_path=a.status,
                    interval=int(a.interval) if a.interval == int(a.interval) else a.interval,
-                   burst=a.burst, idle_stop=a.idle_stop)
+                   burst=a.burst, idle_stop=a.idle_stop, push=push)
     while True:
         try:
             d.tick()
