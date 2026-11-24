@@ -27,6 +27,10 @@ antonio font           | /fonts/antonio.woff2 | 200
 warp add-on            | /warp-addon.zip      | 200
 activity log api       | /api/activity        | 200
 board api              | /api/board           | 200     | "theme":"
+project stars          | /api/board           | 200     | "starred":
+agents change token    | /api/changes         | 200     | "agents":
+agents api             | /api/agents          | 200     | "alive":
+inbox api              | /api/inbox           | 200     | "flagged_count":
 version api            | /api/version         | 200     | "commit":"
 mcp                    | /mcp                 | !404
 mcp remote             | /mcp-remote          | 401,404
