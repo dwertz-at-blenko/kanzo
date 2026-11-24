@@ -38,16 +38,19 @@ Dave comments on a card (unless he ticks "Do not send to agent") and a backgroun
 | Unit | `kanzo-dispatch.service` (user), `KillMode=process` so a restart never takes the claude daemon and its sessions down |
 | Reads | `http://127.0.0.1:8111` API; `kanzo.db` read-only once, on the first run |
 | Writes | the board's `/mcp` as `kanzo-dispatch`; state in `~/.local/share/kanzo/dispatch/state.json` |
-| Secrets | none: no vault token, `claude` uses this user's login |
+| Secrets | one: `KANZO_VAPID_PRIVATE_KEY`, the Web Push key, injected by `deploy/run-dispatch.sh`; `claude` uses this user's login |
+| Wrapper | `deploy/run-dispatch.sh`, the unit's `ExecStart`, like `run-kanzo.sh`: runs itself under `bws run`, then keeps only `HOME PATH USER LOGNAME LANG LC_ALL SHELL XDG_RUNTIME_DIR XDG_DATA_DIRS DBUS_SESSION_BUS_ADDRESS SSH_AUTH_SOCK JOURNAL_STREAM INVOCATION_ID` and `KANZO_*` (not `KANZO_REMOTE_BEARER`) before it starts the dispatcher, which takes the key out of its own environment. No vault: it starts anyway, push off |
+
+The board side of push (the manifest, `/sw.js`, the icons and `/api/push`) ships with `deploy.sh` and has its `features.txt` lines; the dispatcher's sender ships with the pull. Making the key: `agent/dispatch/README.md`, "Push".
 
 1. Dry run first: `agent/dispatch/kanzo_dispatch.py --once --dry-run` (writes nothing, prints what it would do).
-2. Install: `ln -sf ~/dev/kanzo/deploy/kanzo-dispatch.service ~/.config/systemd/user/ && systemctl --user daemon-reload && systemctl --user enable --now kanzo-dispatch`
+2. Install: `ln -sf ~/dev/kanzo/deploy/kanzo-dispatch.service ~/.config/systemd/user/ && systemctl --user daemon-reload && systemctl --user enable --now kanzo-dispatch` (after a change to the unit: `systemctl --user daemon-reload && systemctl --user restart kanzo-dispatch`)
 3. Log: `journalctl --user -u kanzo-dispatch -f`. After two start failures in a row it stops starting sessions until `systemctl --user restart kanzo-dispatch`.
 
 ---
 
-> **Version:** v6 · created 2026-11-05 18:55 EST · updated 2026-11-21 13:26 EST
-> **Changes:** v1 initial. v2 2026-11-07 LCARS theme on, seeded projects. v3 2026-11-07 theme toggle. v4 2026-11-12 three-way theme engine, Skeletal default, fork pushed to github.com/dwertz-at-blenko/kanzo (session 421baa4d). v5 2026-11-21 deploy only through deploy/deploy.sh: commit stamp, features.txt, rollback (session b1475961-06d7-40b0-9eff-f2b47896b6bb). v6 2026-11-21 kanzo-dispatch section (same session).
+> **Version:** v7 · created 2026-11-05 18:55 EST · updated 2026-11-24
+> **Changes:** v7 2026-11-24 kanzo-dispatch starts through `deploy/run-dispatch.sh` for the Web Push key; push features on the board. v1 initial. v2 2026-11-07 LCARS theme on, seeded projects. v3 2026-11-07 theme toggle. v4 2026-11-12 three-way theme engine, Skeletal default, fork pushed to github.com/dwertz-at-blenko/kanzo (session 421baa4d). v5 2026-11-21 deploy only through deploy/deploy.sh: commit stamp, features.txt, rollback (session b1475961-06d7-40b0-9eff-f2b47896b6bb). v6 2026-11-21 kanzo-dispatch section (same session).
 > **This file:** /home/claude/dev/kanzo/deploy/README.md
 > **Session:** 08cf0c04-265c-4b64-8e18-d5679b1a650d · vps as claude · cwd /home/claude/dev
 > **Resume:** ssh -t blenko-claude 'cd /home/claude/dev && claude --resume 08cf0c04-265c-4b64-8e18-d5679b1a650d'   (from the Mac)
