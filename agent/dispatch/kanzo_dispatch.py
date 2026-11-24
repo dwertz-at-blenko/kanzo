@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-# Version: v3 · created 2026-11-21 13:26 EST · updated 2026-11-23 14:59 EST
+# Version: v4 · created 2026-11-21 13:26 EST · updated 2026-11-24
 # Changes: v1 watch the board for Dave's @claude comments and run one background Claude session per card.
 #          v2 2026-11-23 any comment by Dave starts or reaches the session; "[note]" comments are skipped.
 #          v3 2026-11-23 a comment goes to the live session already working the card (background or a
 #             herdr pane); a new agent starts only when nobody is; `@claude new` forces one.
+#          v4 2026-11-24 status.json for the board (live sessions, card owners, a receipt per comment,
+#             heartbeat); `@claude start`; one nudge, then a flag, when the agent stays silent; burst
+#             guard; resume an ended session before a cold start; stop idle sessions on done cards;
+#             follow-ups say when a comment has pictures.
 # This file: /home/claude/dev/kanzo/agent/dispatch/kanzo_dispatch.py (repo dwertz-at-blenko/kanzo, branch public-url)
 # Session: b1475961-06d7-40b0-9eff-f2b47896b6bb · vps as claude · cwd /home/claude/dev
 """kanzo-dispatch: delegate a card to Claude by commenting on it.
@@ -18,12 +22,14 @@ started (and only detaches one it did not); `@claude new` starts a separate one.
 comments on the card as `kanzo-dispatch` through the board's MCP endpoint, so its own comments
 never look like Dave's and never trigger it.
 
-Reads: the board's loopback HTTP API, live sessions' transcripts under ~/.claude/projects, and
-once, on the very first run, the highest comment id from the database file (read-only), so old
-comments are never replayed.
-Runs: `claude --bg --name <name> <brief>`, `claude agents --json --all`, `claude stop <id>`,
-`claude attach <id>` inside a private tmux to type a follow-up into an idle background session,
-and `herdr agent list` / `herdr agent prompt <pane> <text>` for a session in a terminal pane.
+Reads: the board's loopback HTTP API, live sessions' transcripts under ~/.claude/projects and
+job files under ~/.claude/jobs, and the database file, read-only: once, on the very first run,
+the highest comment id, so old comments are never replayed, and each pass which cards are done.
+Runs: `claude --bg --name <name> <brief>`, `claude --bg --resume <session id> <text>`,
+`claude agents --json --all`, `claude stop <id>`, `claude attach <id>` inside a private tmux to
+type a follow-up into an idle background session, and `herdr agent list` /
+`herdr agent prompt <pane> <text>` for a session in a terminal pane.
+Writes: state.json and, every pass, status.json beside it for the board.
 
     kanzo_dispatch.py --once                 # one pass
     kanzo_dispatch.py --loop --interval 5    # the service
@@ -52,6 +58,7 @@ BOARD_ACTOR = "board"
 TRIGGER = re.compile(r"^\s*@claude\b", re.I)
 STOP = re.compile(r"^\s*@claude\s+stop\b", re.I)
 NEW = re.compile(r"^\s*@claude\s+new\b", re.I)    # skip the owner search: a separate agent
+START = re.compile(r"^\s*@claude\s+start\b", re.I)  # start an agent, the card is the brief
 NOTE = re.compile(r"^\s*\[note\]", re.I)          # the board's "do not send to agent" box
 BG_ID = re.compile(r"backgrounded\W+([0-9a-f]{8})")
 SECRET_NAME = re.compile(r"TOKEN|SECRET|PASSW|CREDENTIAL|API_?KEY|BEARER|COOKIE|BWS_", re.I)
@@ -70,6 +77,14 @@ ATTACH_READY = 25
 ATTACH_VERIFY = 25
 COMMENT_CLIP = 4000
 BRIEF_CLIP = 100_000    # one argv string must stay under the kernel's 128 KiB
+SESSIONS_EVERY = 15     # seconds between `claude agents` reads made only for status.json (one takes ~3 s)
+SCAN_BUDGET = 64 << 20  # transcript bytes read per pass for status.json (~0.7 s); a restart catches up
+NUDGE_AFTER = 20        # a turn that ends sooner than this after a delivery is not judged yet
+IDLE_STOP = 3600        # an idle dispatcher session on a done card is stopped after this long
+KEEP_RECEIPTS = 20      # comment receipts kept per card
+KEEP_FOR = 7 * 86400    # a card's receipts are dropped after this long untouched
+NUDGE = ("Card {key}: Dave has no answer on the card yet and he reads only the card. Post your answer or "
+         "your question as a card comment now with the kanzo tools, and set the card status.")
 
 log = logging.getLogger("kanzo-dispatch")
 
@@ -252,6 +267,25 @@ def live(agent):
     return True
 
 
+def session_state(agent, job):
+    """working, idle or blocked for status.json. A background session's job file is read every
+    pass, so it is fresher than the session list, which is read at most every SESSIONS_EVERY."""
+    js = job.get("state")
+    if agent.get("kind") == "background" and js in ("working", "blocked"):
+        return js
+    if agent.get("kind") == "background" and js in ("done", "idle"):
+        return "idle"
+    if blocked(agent) or agent.get("status") == "waiting":
+        return "blocked"
+    return "working" if working(agent) else "idle"
+
+
+def answered(data, after):
+    """An agent commented on the card after comment `after`, or the card is in review or done."""
+    return (data["task"].get("status") in ("review", "done")
+            or any(c["id"] > after and c["author"] not in (DAVE, AUTHOR) for c in data["comments"]))
+
+
 def card_number(ref):
     """`api#12`, 12 or "12" -> 12; anything else -> None."""
     m = CARD_REF.search(str(ref))
@@ -267,45 +301,102 @@ def stamp(text):
         return 0
 
 
-def last_write(path, task_id):
-    """When this transcript last wrote to card `task_id` through a kanzo MCP write that
-    succeeded (epoch seconds), or 0. The parsing follows tools/activity-sign/sign.py; lines
-    without a kanzo call are skipped before any json parsing, since transcripts get large."""
-    last, pending = 0, {}
-    try:
-        f = open(path, errors="replace")
-    except OSError:
-        return 0
-    with f:
-        for line in f:
-            if "mcp__kanzo__" not in line and not (pending and "tool_result" in line):
+def iso(t):
+    return datetime.datetime.fromtimestamp(t, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def write_private(path, doc):
+    """Atomically, mode 0600: a temp file in the same folder, then a rename."""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = f"{path}.{os.getpid()}.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(doc, f, indent=1, sort_keys=True)
+    os.replace(tmp, path)
+
+
+def kanzo_writes(lines, pending, cards):
+    """Fold the kanzo MCP writes that succeeded into `cards` {task id: epoch of the latest}. The
+    parsing follows tools/activity-sign/sign.py; lines (bytes) without a kanzo call are skipped
+    before any json parsing, since transcripts get large. `pending` holds the calls whose result
+    has not been read yet: it may be in the next chunk."""
+    for line in lines:
+        if b"mcp__kanzo__" not in line and not (pending and b"tool_result" in line):
+            continue
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        content = (entry.get("message") or {}).get("content") if isinstance(entry, dict) else None
+        if not isinstance(content, list):
+            continue
+        for b in content:
+            if not isinstance(b, dict):
                 continue
-            try:
-                entry = json.loads(line)
-            except ValueError:
-                continue
-            content = (entry.get("message") or {}).get("content")
-            if not isinstance(content, list):
-                continue
-            for b in content:
-                if not isinstance(b, dict):
+            name = b.get("name")
+            if b.get("type") == "tool_use" and name in CARD_IN_INPUT | CARD_IN_RESULT:
+                ref = (b.get("input") or {}).get("id", "") if name in CARD_IN_INPUT else None
+                pending[b.get("id")] = (ref, entry.get("timestamp"))
+            elif b.get("type") == "tool_result" and b.get("tool_use_id") in pending:
+                ref, at = pending.pop(b["tool_use_id"])
+                if b.get("is_error"):
                     continue
-                name = b.get("name")
-                if b.get("type") == "tool_use" and name in CARD_IN_INPUT | CARD_IN_RESULT:
-                    ref = (b.get("input") or {}).get("id", "") if name in CARD_IN_INPUT else None
-                    pending[b.get("id")] = (ref, entry.get("timestamp"))
-                elif b.get("type") == "tool_result" and b.get("tool_use_id") in pending:
-                    ref, at = pending.pop(b["tool_use_id"])
-                    if b.get("is_error"):
-                        continue
-                    if ref is None:                      # create_task, next_task: the reply names the card
-                        reply = b.get("content")
-                        if isinstance(reply, list):
-                            reply = " ".join(x.get("text", "") for x in reply if isinstance(x, dict))
-                        ref = str(reply or "")[:400]
-                    if card_number(ref) == int(task_id):
-                        last = max(last, stamp(at or entry.get("timestamp")))
-    return last
+                if ref is None:                          # create_task, next_task: the reply names the card
+                    reply = b.get("content")
+                    if isinstance(reply, list):
+                        reply = " ".join(x.get("text", "") for x in reply if isinstance(x, dict))
+                    ref = str(reply or "")[:400]
+                n = card_number(ref)
+                if n is not None:
+                    cards[n] = max(cards.get(n, 0), stamp(at or entry.get("timestamp")))
+
+
+class Transcripts:
+    """The cards each session wrote to, read incrementally: per transcript file (the session's own
+    and its subagents/), only the bytes added since the last read. In memory; a restart reads all."""
+
+    def __init__(self, home):
+        self.home = home
+        self.files = {}           # path -> {"sid", "offset", "pending", "cards"}
+
+    def writes(self, sid, budget=None):
+        """-> ({task id: epoch of the latest successful write}, bytes read). With `budget`, reading
+        stops after about that many bytes; the rest is read on a later call."""
+        root = os.path.join(self.home, ".claude", "projects", "*")
+        merged, used = {}, 0
+        for path in glob.glob(os.path.join(root, f"{sid}.jsonl")) + glob.glob(os.path.join(root, sid, "subagents", "*.jsonl")):
+            f = self.files.setdefault(path, {"sid": sid, "offset": 0, "pending": {}, "cards": {}})
+            used += self._read(path, f, None if budget is None else max(budget - used, 0))
+            for n, at in f["cards"].items():
+                merged[n] = max(merged.get(n, 0), at)
+        return merged, used
+
+    @staticmethod
+    def _read(path, f, limit):
+        try:
+            size = os.path.getsize(path)
+            if size < f["offset"]:                       # rewritten: start over
+                f.update(offset=0, pending={}, cards={})
+            todo = size - f["offset"]
+            if todo <= 0 or limit == 0:
+                return 0
+            with open(path, "rb") as fh:
+                fh.seek(f["offset"])
+                chunk = fh.read(todo if limit is None else min(todo, limit))
+                if b"\n" not in chunk and len(chunk) < todo:  # one line longer than the budget
+                    chunk += fh.readline()
+        except OSError:
+            return 0
+        end = chunk.rfind(b"\n") + 1                     # whole lines only; a partial one waits
+        if end and (f["pending"] or b"mcp__kanzo__" in chunk):
+            kanzo_writes(chunk[:end].split(b"\n"), f["pending"], f["cards"])
+        f["offset"] += end
+        return end
+
+    def keep(self, sids):
+        """Forget files of sessions that are no longer live."""
+        self.files = {p: f for p, f in self.files.items() if f["sid"] in sids}
 
 
 class Claude:
@@ -315,23 +406,27 @@ class Claude:
         self.tmux_bin = tmux
         self.sock = sock or os.path.join(tempfile.gettempdir(), f"kanzo-dispatch-{os.getuid()}", "tmux.sock")
         self._agents = None
+        self.listed, self.listed_at = None, 0           # the last list read, kept across passes
+        self.transcripts = Transcripts(self.home)
 
     def run(self, args, cwd=None, timeout=30):
         return subprocess.run([self.bin, *args], cwd=cwd, env=child_env(), capture_output=True,
                               text=True, timeout=timeout, stdin=subprocess.DEVNULL)
 
-    def start(self, cwd, name, prompt):
-        """-> (short id, None) or (None, short error)."""
+    def start(self, cwd, name, prompt, resume=None):
+        """-> (short id, None) or (None, short error). With `resume` (a session id) it continues
+        that conversation in the background instead: `claude --bg --resume <id> <prompt>`."""
         self._agents = None                              # the list changes: read it again next time
+        args = ["--bg", "--resume", resume, prompt] if resume else ["--bg", "--name", name, prompt]
         try:
-            r = self.run(["--bg", "--name", name, prompt], cwd=cwd, timeout=START_TIMEOUT)
+            r = self.run(args, cwd=cwd, timeout=START_TIMEOUT)
         except (OSError, subprocess.SubprocessError) as e:
             return None, f"claude did not run ({type(e).__name__})"
         out = (r.stdout or "") + "\n" + (r.stderr or "")
         m = BG_ID.search(out)
-        if r.returncode != 0 or not m:
+        if r.returncode != 0 or not (m or resume):
             return None, scrub(out)
-        return m.group(1), None
+        return (m.group(1) if m else resume[:8]), None   # resume keeps the session id, so its short id
 
     def stop(self, short):
         self._agents = None
@@ -347,6 +442,7 @@ class Claude:
             try:
                 out = self.run(["agents", "--json", "--all"], timeout=20).stdout
                 self._agents = json.loads(out or "[]")
+                self.listed, self.listed_at = self._agents, now()
             except (OSError, ValueError, subprocess.SubprocessError) as e:
                 log.warning("claude agents --json failed: %s", type(e).__name__)
                 return None           # unknown: the caller must not treat sessions as gone
@@ -373,19 +469,19 @@ class Claude:
             sid = a.get("sessionId")
             if not sid or sid in skip or not live(a):
                 continue
-            files = (glob.glob(os.path.join(self.home, ".claude", "projects", "*", f"{sid}.jsonl"))
-                     + glob.glob(os.path.join(self.home, ".claude", "projects", "*", sid, "subagents", "*.jsonl")))
-            at = max((last_write(p, task_id) for p in files), default=0)
+            at = self.transcripts.writes(sid)[0].get(int(task_id), 0)
             if at > best_at:
                 best, best_at = a, at
         return best
 
     def job(self, short):
+        """The session's job file (background sessions have one), {} when missing or unreadable."""
         try:
-            with open(os.path.join(self.home, ".claude", "jobs", short, "state.json")) as f:
-                return json.load(f)
+            with open(os.path.join(self.home, ".claude", "jobs", str(short), "state.json")) as f:
+                job = json.load(f)
         except (OSError, ValueError):
             return {}
+        return job if isinstance(job, dict) else {}
 
     def session_and_link(self, short, wait=LINK_WAIT):
         deadline = now() + wait
@@ -540,7 +636,7 @@ def brief(data, cwd, ask_id=None):
     t, comments = data["task"], data["comments"]
     key = card_key(t)
     ask = next((c["body"] for c in comments if c["id"] == ask_id), "")
-    ask = TRIGGER.sub("", NEW.sub("", ask, count=1), count=1).strip() or "(see the card and its comments)"
+    ask = TRIGGER.sub("", START.sub("", NEW.sub("", ask, count=1), count=1), count=1).strip() or "(see the card and its comments)"
     lines = [f"- {'Dave (me)' if c['author'] == DAVE else c['author']}, {c['created_at']}: {clip(c['body'], COMMENT_CLIP)}"
              for c in comments]
     head = (f"You are working Kanzo card {key} for Dave, who asked for it on the card. "
@@ -570,25 +666,43 @@ def brief(data, cwd, ask_id=None):
     return head + "Comments, oldest first:\n" + history + rules
 
 
-def follow_up(key, comments, title=None):
-    """One line. `title` is for an adopted session, which may work several cards."""
+def follow_up(key, comments, title=None, images=()):
+    """One line. `title` is for an adopted session, which may work several cards. `images` is the
+    card's image list from GET /api/tasks/{id}: the line counts the comments' pictures, no paths."""
     on = f"{key} ({' '.join(title.split())})" if title else key
     parts = [f"Dave commented on card {on}: {clip(c['body'], COMMENT_CLIP)}" for c in comments]
-    return " | ".join(parts) + " (Answer on the card with the kanzo tools; he reads only the card.)"
+    ids = {c["id"] for c in comments}
+    n = sum(1 for im in images or () if im.get("comment_id") in ids)
+    pics = (f" ({n} picture(s) attached to this comment: get_task on the card lists the file paths, read them.)"
+            if n else "")
+    return " | ".join(parts) + " (Answer on the card with the kanzo tools; he reads only the card.)" + pics
 
 
 # ---------------------------------------------------------------- the dispatcher
 
 class Dispatcher:
     def __init__(self, board, claude, state_path, dev_root, db_path, max_working=3, dry_run=False,
-                 deliver_timeout=DELIVER_TIMEOUT, start_grace=START_GRACE, link_wait=LINK_WAIT, herdr=None):
+                 deliver_timeout=DELIVER_TIMEOUT, start_grace=START_GRACE, link_wait=LINK_WAIT, herdr=None,
+                 status_path=None, interval=5, burst=5, idle_stop=IDLE_STOP, nudge_after=NUDGE_AFTER,
+                 refresh=SESSIONS_EVERY):
         self.board, self.claude, self.herdr = board, claude, herdr or Herdr()
         self.state_path, self.dev_root, self.db_path = state_path, dev_root, db_path
         self.max, self.dry = max_working, dry_run
         self.deliver_timeout, self.start_grace, self.link_wait = deliver_timeout, start_grace, link_wait
+        self.status_path = status_path or os.path.join(os.path.dirname(state_path), "status.json")
+        self.interval, self.burst, self.idle_stop = interval, burst, idle_stop
+        self.nudge_after, self.refresh = nudge_after, refresh
         self.failure = {"cause": None, "count": 0}
         self.halted = None              # in memory only: a restart is the reset
         self.st = self.load()
+        try:                            # carry rev and each card's `since` over a restart
+            with open(self.status_path) as f:
+                old = json.load(f)
+            self.rev = int(old["rev"])
+            self.since = {t: (c["state"], stamp(c["since"])) for t, c in old["cards"].items()}
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            self.rev, self.since = 0, {}
+        self.shown = None               # the last status.json body, `updated` and `rev` left out
 
     # state
     def load(self):
@@ -621,6 +735,26 @@ class Dispatcher:
         except BoardError as e:
             log.error("could not write to card #%s: %s", task_id, e)
 
+    # receipts: what happened to each of Dave's comments, for status.json, kept in state.json
+    def receipt(self, tid, ids, state, note=""):
+        rec = self.st.setdefault("receipts", {}).setdefault(str(tid), {"comments": {}})
+        for cid in ids if isinstance(ids, list) else [ids]:
+            rec["comments"][str(cid)] = {"state": state, "at": now(), "note": clip(note, 200)}
+        for old in sorted(rec["comments"], key=int)[:-KEEP_RECEIPTS]:
+            del rec["comments"][old]
+        rec["touched"] = now()
+        self.save()
+
+    def mark(self, tid, state=None, note=""):
+        """The card's own state when its sessions do not explain it: failed, unreachable or silent.
+        No state clears it, as any new comment by Dave does."""
+        recs = self.st.setdefault("receipts", {})
+        if state is None and not recs.get(str(tid), {}).get("state"):
+            return
+        recs.setdefault(str(tid), {"comments": {}}).update(state=state, note=clip(note, 200) if state else "",
+                                                           touched=now())
+        self.save()
+
     def first_run(self):
         activity = self.board.latest_activity()      # first, so nothing between the two reads replays
         comment = highest_comment_id(self.db_path)
@@ -644,12 +778,19 @@ class Dispatcher:
                 log.info("adopted %s for card #%s after a restart", found["id"], tid)
             else:
                 del self.st["cards"][tid]
+                self.mark(tid, "failed", "a start was cut off by a dispatcher restart")
                 self.say(tid, "A start for this card was cut off by a dispatcher restart and no session "
                               "showed up. Comment again to retry.", human=True)
             self.save()
 
     # one pass
     def tick(self):
+        try:
+            self.step()
+        finally:
+            self.publish()                               # the heartbeat, even when the pass failed
+
+    def step(self):
         self.claude._agents = None
         if self.st is None:
             self.first_run()
@@ -664,8 +805,11 @@ class Dispatcher:
                 continue
             tid = str(r["task_id"])
             card = st["cards"].get(tid)
-            if card and r.get("actor") not in (BOARD_ACTOR, AUTHOR):
-                card["updated"] = True                   # an agent wrote or moved the card
+            if r.get("actor") not in (BOARD_ACTOR, AUTHOR):
+                if card:
+                    card["updated"] = True               # an agent wrote or moved the card
+                if st.get("receipts", {}).get(tid, {}).get("state") == "silent":
+                    self.mark(tid)                       # it spoke up after all
             if r.get("action") == "commented" and tid not in commented:
                 commented.append(tid)
         new = []
@@ -674,10 +818,19 @@ class Dispatcher:
             for c in (data or {}).get("comments", []):
                 if c["id"] > st["comment_seen"]:
                     new.append((c, data))
+        # Other tools post through the HTTP API and are signed `me` too: comments on many cards in
+        # one pass look like a script, so none of them starts or reaches a session.
+        asks = {str(d["task"]["id"]) for c, d in new if c["author"] == DAVE and not NOTE.match(c["body"])}
+        burst = bool(self.burst) and len(asks) > self.burst
+        if burst:
+            log.warning("held comments on %d cards from one pass: that looks like a script, nothing sent", len(asks))
         for c, data in sorted(new, key=lambda x: x[0]["id"]):
             st["comment_seen"] = max(st["comment_seen"], c["id"])
             self.save()                                  # seen before acted: at most once
-            if c["author"] == DAVE:
+            if c["author"] == DAVE and burst and not NOTE.match(c["body"]):
+                self.receipt(data["task"]["id"], c["id"], "held",
+                             f"held: comments on {len(asks)} cards at once looked like a script; comment again to send")
+            elif c["author"] == DAVE:
                 self.handle(c, data)
         if rows:
             st["activity_seen"] = max(st["activity_seen"], rows[-1]["id"])
@@ -688,43 +841,77 @@ class Dispatcher:
 
     def handle(self, c, data):
         t = data["task"]
-        tid, body = str(t["id"]), c["body"]
+        tid, body, cid = str(t["id"]), c["body"], c["id"]
         card = self.st["cards"].get(tid)
-        queued = any(q["task"] == tid for q in self.st["queue"])
+        queued = next((q for q in self.st["queue"] if q["task"] == tid), None)
         if NOTE.match(body):                             # a note to self: never reaches an agent
             return
+        self.mark(tid)                                   # a new ask: an earlier failure or silence is old news
+        held = (card or {}).get("pending") or []         # comments still waiting for the session
         if STOP.match(body):
+            if held:
+                self.receipt(tid, held, "failed", "not delivered: the session was stopped first")
             if card and card.get("adopted"):             # not ours to stop: let it go
                 self.detach(tid, card)
+                note = f"detached session {card['name']}; it was not stopped"
                 self.say(tid, f"Detached session `{card['name']}` from this card. The dispatcher did not "
                               f"start it, so it was not stopped and keeps running. Your next comment here "
                               f"starts a new agent.")
             elif card:
                 self.stop_card(tid, card)
+                note = f"stopped session {card['name']}"
                 self.say(tid, "Stopped the session for this card.")
             elif queued:
                 self.st["queue"] = [q for q in self.st["queue"] if q["task"] != tid]
                 self.save()
+                note = "taken off the queue"
                 self.say(tid, "Taken off the queue; no session was started.")
             else:
+                note = "no session was attached"
                 self.say(tid, "No session is attached to this card.")
+            self.receipt(tid, cid, "command", note)
             return
         if NEW.match(body):                              # a separate agent, whoever else is on the card
             if card and card.get("adopted"):
                 self.detach(tid, card)
             elif card:
                 self.stop_card(tid, card)
-            if not queued:
-                self.request(tid, c["id"])
+            if queued:
+                self.receipt(tid, cid, "queued")
+            else:
+                self.request(tid, cid, fresh=True, ids=[cid, *held])   # the brief holds them all
             return
+        if queued:                                       # its brief will hold this comment too
+            queued.setdefault("also", []).append(cid)
+            self.receipt(tid, cid, "queued")
+            return
+        if START.match(body) and card:
+            agent = self.claude.find(card)
+            if agent == "unknown" or alive(agent):       # someone is on it: name them, start nothing
+                self.on_it(tid, cid, card["name"], card.get("short"))
+                return
         if card:                                         # one session per card, done or not
-            card.setdefault("pending", []).append(c["id"])
+            card.setdefault("pending", []).append(cid)
             card.setdefault("pending_since", now())
-            self.save()
+            self.receipt(tid, cid, "waiting")
             return
-        if queued:
-            return
-        self.route(tid, c["id"])
+        self.route(tid, cid, start=bool(START.match(body)))
+
+    def on_it(self, tid, cid, name, short):
+        """`@claude start` on a card a live session already works: one comment naming it."""
+        self.say(tid, f"Session `{name}` (id {short}) is already on this card, so nothing was started. "
+                      f"Comment here to reach it.")
+        self.receipt(tid, cid, "command", f"already on the card: {name}")
+
+    def forget(self, tid, card):
+        """Take the card off the dispatcher's list. A session it started is remembered, so the
+        next comment can resume that conversation instead of starting cold."""
+        if card.get("session_id") and not card.get("adopted"):
+            rec = self.st.setdefault("receipts", {}).setdefault(tid, {"comments": {}})
+            rec.update(resume={k: card.get(k) for k in ("session_id", "short", "name", "cwd", "link")},
+                       touched=now())
+        self.st["cards"].pop(tid, None)
+        self.save()
 
     def stop_card(self, tid, card):
         """Stop a session the dispatcher started; one it adopted is only let go."""
@@ -732,8 +919,7 @@ class Dispatcher:
             ok, why = self.claude.stop(card["short"])
             if not ok:
                 log.warning("claude stop %s: %s", card["short"], why)
-        self.st["cards"].pop(tid, None)
-        self.save()
+        self.forget(tid, card)
 
     def detach(self, tid, card):
         """Let an adopted session go, and keep it from being adopted for this card again."""
@@ -745,24 +931,33 @@ class Dispatcher:
         self.st["cards"].pop(tid, None)
         self.save()
 
-    def route(self, tid, comment_id, why=None, skip=()):
-        """Your comment goes to whoever is working the card; if nobody is, a new agent starts."""
+    def route(self, tid, comment_id, why=None, skip=(), ids=None, start=False):
+        """Your comment goes to whoever is working the card; if nobody is, a new agent starts.
+        `ids` are all the comments this carries (default: the one); `start` is `@claude start`."""
+        ids = ids or [comment_id]
         skip = set(skip) | set(self.st.get("detached", {}).get(tid, []))
         owner = self.claude.owner(int(tid), skip)
         if owner == "unknown":
+            self.receipt(tid, ids, "failed", "could not list the Claude sessions")
+            self.mark(tid, "failed", "could not list the Claude sessions")
             self.say(tid, "Could not list the Claude sessions to check whether one is already on this card, "
                           "so nothing was started. Comment again to retry.", human=True)
+        elif owner and start:
+            self.on_it(tid, comment_id, owner.get("name") or owner.get("sessionId"),
+                       owner.get("id") or str(owner.get("sessionId"))[:8])
         elif owner:
-            self.adopt(tid, owner, comment_id)
+            self.adopt(tid, owner, ids)
         else:
-            self.request(tid, comment_id, why)
+            self.request(tid, comment_id, why, ids=ids)
 
-    def adopt(self, tid, agent, comment_id):
+    def adopt(self, tid, agent, ids):
         """Attach a session the dispatcher did not start, then deliver through the usual path."""
         data = self.board.task(tid)
         if not data:
             return
-        short, sid, name = agent.get("id"), agent.get("sessionId"), agent.get("name") or agent.get("id")
+        sid = agent.get("sessionId")
+        short = agent.get("id") or str(sid)[:8]          # an interactive session has no short id: its first 8
+        name = agent.get("name") or short
         kind = "interactive" if agent.get("kind") == "interactive" else "background"
         if self.dry:
             log.info("dry run: would send the comment on %s to %s session %s (%s)", card_key(data["task"]),
@@ -770,20 +965,21 @@ class Dispatcher:
             return
         card = {"key": card_key(data["task"]), "name": name, "cwd": agent.get("cwd"), "status": "attached",
                 "short": short, "session_id": sid, "adopted": True, "kind": kind, "since": now(),
-                "updated": False, "warned": False, "pending": [comment_id], "pending_since": now(),
+                "updated": False, "warned": False, "pending": list(ids), "pending_since": now(),
                 "failures": 0, "announce": True,
                 "link": self.claude.session_and_link(short, 0)[1] if kind == "background" and short else None}
         if kind == "interactive":
             pane = self.herdr.pane_for(sid, name)
             card["pane"] = pane.get("pane_id") if pane else None
         self.st["cards"][tid] = card
-        self.save()
+        self.receipt(tid, list(ids), "waiting")
         log.info("adopted %s session %s for %s", kind, short, card["key"])
 
     def unreachable(self, tid, card, why):
         log.warning("could not reach %s for %s: %s", card.get("short"), card["key"], why)
         self.st["cards"].pop(tid, None)
-        self.save()
+        self.receipt(tid, card.get("pending") or [], "failed", f"could not reach the session: {why}")
+        self.mark(tid, "unreachable", f"session {card['name']} could not be reached: {why}")
         self.say(tid, f"Session `{card['name']}` is already on this card and I could not reach it. "
                       f"Comment `@claude new` to start a separate agent.", human=True)
 
@@ -799,17 +995,22 @@ class Dispatcher:
                 n += a == "unknown" or working(a)
         return n
 
-    def request(self, tid, comment_id, why=None):
+    def request(self, tid, comment_id, why=None, fresh=False, ids=None):
+        """`fresh`: never resume the card's earlier session (`@claude new`)."""
+        ids = ids or [comment_id]
         if self.halted:
+            self.receipt(tid, ids, "failed", "the dispatcher stopped starting sessions after two failures")
+            self.mark(tid, "failed", f"no starts after two failures: {self.halted}")
             self.say(tid, f"Not started: the dispatcher stopped starting sessions after two failures in a row "
                           f"({self.halted}). It retries after a fix and a restart of kanzo-dispatch.", human=True)
             return
         if self.working_count() >= self.max:
-            self.st["queue"].append({"task": tid, "comment": comment_id, "why": why})
-            self.save()
+            self.st["queue"].append({"task": tid, "comment": comment_id, "why": why, "at": now(),
+                                     "fresh": fresh, "also": ids[1:]})
+            self.receipt(tid, ids, "queued")
             self.say(tid, f"Queued: {self.max} sessions are already working. This card starts when one finishes.")
             return
-        self.start(tid, comment_id, why)
+        self.start(tid, comment_id, why, fresh, ids)
 
     def folder(self, slug):
         """-> (dir, None) or (None, why)."""
@@ -825,13 +1026,18 @@ class Dispatcher:
         return None, (f"There is no checkout of {repos[0]} on this box (looked for {want}), so no session "
                       f"was started. Clone it there, then comment again.")
 
-    def start(self, tid, comment_id, why=None):
+    def start(self, tid, comment_id, why=None, fresh=False, ids=None):
+        ids = ids or [comment_id]
         data = self.board.task(tid)
         if not data:
             return
         t = data["task"]
+        if not fresh and self.resume(tid, data, ids, why):
+            return
         cwd, problem = self.folder(t["project"])
         if problem:
+            self.receipt(tid, ids, "failed", "no checkout of the card's repo on this box")
+            self.mark(tid, "failed", "no checkout of the card's repo on this box")
             self.say(tid, problem, human=True)
             return
         name = session_name(t)
@@ -846,16 +1052,59 @@ class Dispatcher:
         if err:
             self.st["cards"].pop(tid, None)
             self.save()
+            self.receipt(tid, ids, "failed", f"claude did not start: {err}")
             self.fail(tid, err)
             return
         self.failure = {"cause": None, "count": 0}
         sid, link = self.claude.session_and_link(short, self.link_wait)
-        card.update(status="attached", short=short, session_id=sid, link=link)
-        self.save()
+        card.update(status="attached", short=short, session_id=sid, link=link,
+                    wait={"comment": max(ids), "at": now(), "nudged": False})
+        self.st.get("receipts", {}).get(tid, {}).pop("resume", None)   # a new conversation replaces the old one
+        self.carried(tid, data, ids, "started", f"started session {short}")
         log.info("started %s for %s in %s", short, card["key"], cwd)
         lead = f"Picked up ({why}). " if why else "Picked up. "
         self.say(tid, f"{lead}Session `{name}` (id {short}) in {cwd}. "
                       + (f"App: {link}" if link else "The app link was not ready yet; `claude agents` lists it."))
+
+    def carried(self, tid, data, ids, state, note):
+        """Receipts for the comments a start or resume carried; `@claude start|new` is a command."""
+        bodies = {c["id"]: c["body"] for c in data["comments"]}
+        for cid in ids:
+            command = START.match(bodies.get(cid, "")) or NEW.match(bodies.get(cid, ""))
+            self.receipt(tid, cid, "command" if command else state, note)
+
+    def resume(self, tid, data, ids, why=None):
+        """The card's earlier dispatcher session ended or was stopped: continue it with the new
+        comments (`claude --bg --resume`), so the card keeps one conversation. -> True when it runs."""
+        prev = self.st.get("receipts", {}).get(tid, {}).get("resume")
+        if not prev or not prev.get("session_id"):
+            return False
+        key = card_key(data["task"])
+        if self.dry:
+            log.info("dry run: would resume %s for %s", prev.get("short"), key)
+            return True
+        comments = [c for c in data["comments"] if c["id"] in ids]
+        card = {"key": key, "name": prev.get("name") or session_name(data["task"]), "cwd": prev.get("cwd"),
+                "comment": ids[0], "status": "starting", "since": now(), "updated": False, "warned": False}
+        self.st["cards"][tid] = card
+        self.save()                                      # the intent is on disk before claude runs
+        short, err = self.claude.start(prev.get("cwd") or self.dev_root, card["name"],
+                                       follow_up(key, comments, images=data.get("images")), prev["session_id"])
+        self.st["receipts"][tid].pop("resume", None)     # one try per ended session
+        if err:
+            log.warning("could not resume %s for %s (%s): starting a new session", prev.get("short"), key, err)
+            self.st["cards"].pop(tid, None)
+            self.save()
+            return False
+        sid, link = self.claude.session_and_link(short, self.link_wait)
+        card.update(status="attached", short=short, session_id=sid or prev["session_id"],
+                    link=link or prev.get("link"), wait={"comment": max(ids), "at": now(), "nudged": False})
+        self.carried(tid, data, ids, "delivered", f"resumed session {short}")
+        log.info("resumed %s for %s", short, key)
+        lead = f"Resumed ({why}). " if why else "Resumed. "
+        self.say(tid, f"{lead}Your comment went to the card's earlier session `{card['name']}` (id {short}), "
+                      f"so it keeps the conversation. " + (f"App: {card['link']}" if card.get("link") else ""))
+        return True
 
     def fail(self, tid, err):
         cause = re.sub(r"\d+", "N", err)
@@ -867,14 +1116,16 @@ class Dispatcher:
             self.halted = err
             log.error("two start failures in a row (%s): no new starts until kanzo-dispatch restarts", err)
             msg += " That is two in a row, so the dispatcher stops starting sessions until it is fixed and restarted."
+        self.mark(tid, "failed", f"claude did not start: {err}")
         self.say(tid, msg, human=True)
 
     def replace(self, tid, card, why):
         """The card's session is gone or would not take the comment: whoever else works the card
-        gets it, or a new one from the full history. The dropped session is never re-adopted."""
+        gets it, else the dropped session is resumed with them, else a new one starts from the full
+        history. The dropped session is never re-adopted."""
         self.stop_card(tid, card)
-        first = (card.get("pending") or [card.get("comment")])[0]
-        self.route(tid, first, why, skip={card.get("session_id")})
+        ids = card.get("pending") or [card.get("comment")]
+        self.route(tid, ids[0], why, skip={card.get("session_id")}, ids=ids)
 
     def ready(self, card, agent):
         """-> (ready, pane id or None, why not). A pane is re-resolved on every try."""
@@ -907,7 +1158,8 @@ class Dispatcher:
                 if self.dry:
                     log.info("dry run: would deliver %d comment(s) to %s", len(comments), card["short"])
                     continue
-                text = follow_up(card["key"], comments, data["task"].get("title") if card.get("adopted") else None)
+                text = follow_up(card["key"], comments, data["task"].get("title") if card.get("adopted") else None,
+                                 data.get("images"))
                 if not comments:
                     ok, why = True, "none left"
                 elif pane:
@@ -918,6 +1170,9 @@ class Dispatcher:
                 ok = None                                # busy: wait, up to the deadline below
             if ok:
                 log.info("delivered %d comment(s) on %s to %s", len(comments), card["key"], card["short"])
+                if comments:
+                    self.receipt(tid, [c["id"] for c in comments], "delivered")
+                    card["wait"] = {"comment": max(c["id"] for c in comments), "at": now(), "nudged": False}
                 card.update(pending=[], updated=False, warned=False, since=now(), failures=0)
                 card.pop("pending_since", None)
                 announce = card.pop("announce", False)   # once, on the first delivery after adopting
@@ -941,6 +1196,8 @@ class Dispatcher:
                 self.say(tid, f"Your comment did not reach the session: it stayed busy for "
                               f"{self.deliver_timeout // 60} minutes. App: {card.get('link') or card['short']}",
                          human=True)
+                self.receipt(tid, card["pending"], "failed",
+                             f"the session stayed busy for {self.deliver_timeout // 60} minutes")
                 card["pending"] = []
                 card.pop("pending_since", None)
                 self.save()
@@ -950,12 +1207,24 @@ class Dispatcher:
             if card.get("status") != "attached":
                 continue
             agent = self.claude.find(card)
-            if agent != "unknown" and card.get("adopted"):  # not started for this card: no watchdog
+            if agent == "unknown":
+                continue
+            if card.get("adopted"):                      # not started for this card: only the nudge
                 if not alive(agent) and not card.get("pending"):
                     self.st["cards"].pop(tid, None)
                     self.save()
+                elif alive(agent) and not working(agent):
+                    self.nudge(tid, card, agent)
                 continue
-            if agent == "unknown" or working(agent) or now() - card.get("since", 0) < self.start_grace:
+            idle = alive(agent) and not working(agent) and not blocked(agent)
+            if not idle:
+                card.pop("idle_since", None)
+            elif "idle_since" not in card:
+                card["idle_since"] = now()
+                self.save()
+            if working(agent) or now() - card.get("since", 0) < self.start_grace:
+                continue
+            if idle and self.nudge(tid, card, agent):
                 continue
             if not card.get("updated") and not card.get("warned"):
                 what = ("is waiting on a permission or a question in the app" if blocked(agent)
@@ -965,15 +1234,163 @@ class Dispatcher:
                 card["warned"] = True
                 self.save()
             if not alive(agent) and not card.get("pending"):
-                self.st["cards"].pop(tid, None)          # gone: the slot is free
-                self.save()
+                self.forget(tid, card)                   # gone: the slot is free; a comment resumes it
+            elif (idle and self.idle_stop and not card.get("pending") and not self.dry
+                  and now() - card["idle_since"] >= self.idle_stop and int(tid) in self.done_cards([int(tid)])):
+                log.info("stopping %s: idle %d minutes on done card %s", card["short"],
+                         (now() - card["idle_since"]) // 60, card["key"])
+                self.stop_card(tid, card)                # no comment; the next one resumes it
+
+    def nudge(self, tid, card, agent):
+        """The turn ended and Dave's last comment has no answer on the card: type one reminder into
+        the session; when the next turn ends without one too, say so on the card and set human.
+        -> True while this is in hand, so the plain watchdog waits."""
+        wait = card.get("wait")
+        if not wait or card.get("pending") or blocked(agent):
+            return False
+        if now() - wait["at"] < self.nudge_after:
+            return True
+        go, pane, _ = self.ready(card, agent)
+        if not go:                                       # never into a session that is working
+            return False
+        data = self.board.task(tid)
+        if not data or answered(data, wait["comment"]):
+            card.pop("wait")
+            self.save()
+            return True
+        if self.dry:
+            log.info("dry run: would nudge %s on %s", card["short"], card["key"])
+            return True
+        if not wait["nudged"]:
+            text = NUDGE.format(key=card["key"])
+            ok, why = self.herdr.prompt(pane, text) if pane else self.claude.deliver(card, text)
+            log.info("nudged %s on %s: %s", card["short"], card["key"], "ok" if ok else why)
+            wait.update(nudged=True, at=now())           # once per delivered comment, even when it failed
+            self.save()
+            return True
+        card.pop("wait")
+        card["warned"] = True
+        self.mark(tid, "silent", "the agent finished twice without answering on the card")
+        self.say(tid, f"The agent finished without answering here. Open the session to see what it did: "
+                      f"{card.get('link') or card.get('short')}. Comment again to retry.", human=True)
+        return True
 
     def start_queued(self):
         while self.st["queue"] and not self.halted and self.working_count() < self.max:
             item = self.st["queue"].pop(0)
             self.save()
             if item["task"] not in self.st["cards"]:
-                self.start(item["task"], item["comment"], item.get("why") or "from the queue")
+                self.start(item["task"], item["comment"], item.get("why") or "from the queue",
+                           item.get("fresh", False), [item["comment"], *item.get("also", [])])
+
+    # status.json: what the board shows (the contract is agent/dispatch/README.md, "What the board shows")
+    def publish(self):
+        """Every pass, as a heartbeat; `rev` moves only when something besides `updated` did."""
+        if self.dry or self.st is None:
+            return
+        try:
+            body = self.status()
+            key = json.dumps(body, sort_keys=True)
+            if key != self.shown:
+                self.rev, self.shown = self.rev + 1, key
+            write_private(self.status_path, {"version": 1, "updated": iso(now()), "rev": self.rev, **body})
+        except (BoardError, OSError, ValueError, sqlite3.Error, subprocess.SubprocessError) as e:
+            log.warning("status.json not written: %s", e)
+
+    def status(self):
+        st, claude = self.st, self.claude
+        listed = claude._agents                          # already read this pass: free
+        if listed is None:                               # else at most every `refresh` seconds
+            listed = (claude.agents(fresh=True) if now() - claude.listed_at >= self.refresh else None) or claude.listed
+        agents = sorted((a for a in listed or [] if a.get("sessionId") and live(a)),
+                        key=lambda a: (a.get("startedAt") or 0, a["sessionId"]))
+        mine = {c["session_id"]: c for c in st["cards"].values() if c.get("session_id")}
+        detached = st.get("detached", {})
+        budget, sessions, best = SCAN_BUDGET, {}, {}
+        for a in agents:
+            sid = a["sessionId"]
+            short = a.get("id") or sid[:8]
+            job, card = claude.job(short), mine.get(sid)
+            writes, used = claude.transcripts.writes(sid, budget)
+            budget = max(budget - used, 0)
+            for n, at in writes.items():                 # latest writer wins, a detached one never
+                if at > best.get(str(n), (0,))[0] and sid not in detached.get(str(n), []):
+                    best[str(n)] = (at, sid)
+            tokens = job.get("tokens")
+            sessions[sid] = {
+                "id": short, "session_id": sid, "name": a.get("name") or job.get("name") or "",
+                "kind": "interactive" if a.get("kind") == "interactive" else "background",
+                "state": session_state(a, job),
+                "detail": clip(" ".join(str(job.get("detail") or "").split()), 160),
+                "folder": a.get("cwd") or "",
+                "started": iso(a["startedAt"] / 1000) if isinstance(a.get("startedAt"), (int, float)) else "",
+                "tokens": tokens if isinstance(tokens, int) and not isinstance(tokens, bool) else None,
+                "link": remote_url(job.get("bridgeSessionId")) or (card or {}).get("link") or "",
+                "origin": ("adopted" if card.get("adopted") else "dispatch") if card else "other",
+                "cards": []}
+        claude.transcripts.keep(set(sessions))
+        done = self.done_cards([int(t) for t in best if t not in st["cards"]])
+        owner = {t: sid for t, (at, sid) in best.items() if int(t) not in done}
+        for t, c in st["cards"].items():                 # the dispatcher's own session comes first
+            if c.get("status") == "starting":
+                owner.pop(t, None)
+            elif c.get("session_id") in sessions:
+                owner[t] = c["session_id"]
+        for t, sid in sorted(owner.items(), key=lambda x: int(x[0])):
+            sessions[sid]["cards"].append(int(t))
+        queued = {q["task"] for q in st["queue"]}
+        recs = st.setdefault("receipts", {})
+        stale = [t for t, r in recs.items()
+                 if r.get("touched", 0) < now() - KEEP_FOR and t not in st["cards"] and t not in queued]
+        for t in stale:
+            del recs[t]
+        if stale:
+            self.save()
+        cards = {}
+        for t in set(owner) | queued | set(st["cards"]) | set(recs):
+            c, rec, sid = st["cards"].get(t) or {}, recs.get(t, {}), owner.get(t)
+            sticky = rec.get("state")
+            if t in queued:
+                state = "queued"
+            elif c.get("status") == "starting":
+                state = "starting"
+            elif sticky == "silent" or (sticky == "unreachable" and sid):
+                state = sticky
+            elif sid:
+                state = sessions[sid]["state"]
+            else:
+                state = sticky or "ended"
+            seen = self.since.get(t)
+            if not seen or seen[0] != state:
+                seen = self.since[t] = (state, now())
+            cards[t] = {"session": sessions[sid]["id"] if sid else "", "origin": sessions[sid]["origin"] if sid else "",
+                        "state": state, "since": iso(seen[1]), "note": rec.get("note", "") if state == sticky else "",
+                        "comments": {i: {"state": r["state"], "at": iso(r["at"]), "note": r.get("note", "")}
+                                     for i, r in rec.get("comments", {}).items()}}
+        self.since = {t: v for t, v in self.since.items() if t in cards}
+        return {"interval": self.interval, "max": self.max, "sessions": list(sessions.values()), "cards": cards,
+                "queue": [{"task": int(q["task"]), "comment": q["comment"], "at": iso(q.setdefault("at", now()))}
+                          for q in st["queue"]]}
+
+    def done_cards(self, ids):
+        """Which of these cards are done: one read-only query on the board's database (`--db`), not
+        one HTTP call per card."""
+        if not ids:
+            return set()
+        try:
+            con = sqlite3.connect(f"file:{urllib.parse.quote(self.db_path)}?mode=ro", uri=True, timeout=5)
+            try:
+                done = set()
+                for i in range(0, len(ids), 500):
+                    part = ids[i:i + 500]
+                    done.update(r[0] for r in con.execute(
+                        f"SELECT id FROM tasks WHERE status = 'done' AND id IN ({','.join('?' * len(part))})", part))
+                return done
+            finally:
+                con.close()
+        except sqlite3.Error as e:
+            log.warning("cannot read card statuses from %s: %s", self.db_path, e)
+            return set()
 
 
 def main(argv=None):
@@ -986,15 +1403,23 @@ def main(argv=None):
     p.add_argument("--board", default="http://127.0.0.1:8111", help="board URL (loopback)")
     home = os.environ.get("KANZO_HOME") or os.path.expanduser("~/.local/share/kanzo")
     p.add_argument("--state", default=os.path.join(home, "dispatch", "state.json"))
-    p.add_argument("--db", default=os.path.join(home, "kanzo.db"), help="read once, read-only, on the first run")
+    p.add_argument("--status", help="status.json for the board (default: beside --state)")
+    p.add_argument("--db", default=os.path.join(home, "kanzo.db"),
+                   help="read-only: the highest comment id on the first run, done cards for status.json")
     p.add_argument("--claude", default="claude", help="claude binary")
     p.add_argument("--herdr", default=os.path.expanduser("~/.local/bin/herdr"), help="herdr binary")
     p.add_argument("--dev-root", default=os.path.expanduser("~/dev"))
     p.add_argument("--max", type=int, default=3, help="sessions working at once (default 3)")
+    p.add_argument("--burst", type=int, default=5,
+                   help="comments on more cards than this in one pass are held as a script (default 5, 0 off)")
+    p.add_argument("--idle-stop", type=float, default=IDLE_STOP,
+                   help="stop a dispatcher session idle this many seconds on a done card (default 3600, 0 off)")
     a = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     d = Dispatcher(Board(a.board), Claude(a.claude), a.state, os.path.abspath(a.dev_root), a.db,
-                   max_working=a.max, dry_run=a.dry_run, herdr=Herdr(a.herdr))
+                   max_working=a.max, dry_run=a.dry_run, herdr=Herdr(a.herdr), status_path=a.status,
+                   interval=int(a.interval) if a.interval == int(a.interval) else a.interval,
+                   burst=a.burst, idle_stop=a.idle_stop)
     while True:
         try:
             d.tick()
