@@ -40,5 +40,9 @@ agents change token    | /api/changes         | 200     | "agents":
 agents api             | /api/agents          | 200     | "alive":
 inbox api              | /api/inbox           | 200     | "flagged_count":
 version api            | /api/version         | 200     | "commit":"
+app manifest           | /manifest.webmanifest | 200    | "display":"standalone"
+app icon               | /icon-192.png        | 200
+service worker         | /sw.js               | 200     | notificationclick
+push api               | /api/push            | 200     | "key":
 mcp                    | /mcp                 | !404
 mcp remote             | /mcp-remote          | 401,404

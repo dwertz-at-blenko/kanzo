@@ -131,6 +131,27 @@ pub struct Inbox {
     pub finished: Vec<InboxItem>,
 }
 
+/// One browser's push subscription, as `PushSubscription.toJSON()` gives it, plus when it was
+/// added and a label the page picks. Kept in `meta` under `push_subscriptions`.
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
+pub struct PushSubscription {
+    pub endpoint: String,
+    pub keys: PushKeys,
+    #[serde(default)]
+    pub added: String,
+    #[serde(default)]
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
+pub struct PushKeys {
+    pub p256dh: String,
+    pub auth: String,
+}
+
+/// Browsers kept; a new one pushes the oldest out.
+pub const PUSH_KEEP: usize = 10;
+
 /// Who the board signs comments as; anyone else is an agent or the dispatcher.
 pub const ME: &str = "me";
 
@@ -344,6 +365,57 @@ impl Store {
             c.execute("UPDATE meta SET value = value + 1 WHERE key = 'changes'", [])?;
             Ok(())
         })
+    }
+
+    /// The browsers that asked for a push when an agent answers. Their endpoints are capability
+    /// URLs: kanzo-dispatch reads this row read-only from the file, and no route returns it.
+    pub fn push_subscriptions(&self) -> Result<Vec<PushSubscription>> {
+        let saved: Option<String> = self
+            .conn
+            .query_row("SELECT value FROM meta WHERE key = 'push_subscriptions'", [], |r| r.get(0))
+            .optional()?;
+        Ok(saved.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default())
+    }
+
+    /// Adds one browser, newest first; the same endpoint again replaces the old entry, and only
+    /// the newest `PUSH_KEEP` stay. The caller checks the endpoint (`web::push_endpoint_ok`).
+    pub fn add_push_subscription(&self, endpoint: &str, p256dh: &str, auth: &str, label: &str) -> Result<usize> {
+        self.write(|c| {
+            let added: String = c.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |r| r.get(0))?;
+            let mut subs = self.push_subscriptions()?;
+            subs.retain(|s| s.endpoint != endpoint);
+            subs.insert(
+                0,
+                PushSubscription {
+                    endpoint: endpoint.into(),
+                    keys: PushKeys { p256dh: p256dh.into(), auth: auth.into() },
+                    added,
+                    label: label.into(),
+                },
+            );
+            subs.truncate(PUSH_KEEP);
+            Self::save_push(c, &subs)?;
+            Ok(subs.len())
+        })
+    }
+
+    pub fn remove_push_subscription(&self, endpoint: &str) -> Result<usize> {
+        self.write(|c| {
+            let mut subs = self.push_subscriptions()?;
+            subs.retain(|s| s.endpoint != endpoint);
+            Self::save_push(c, &subs)?;
+            Ok(subs.len())
+        })
+    }
+
+    // No change token bump: no board redraws for this.
+    fn save_push(c: &Connection, subs: &[PushSubscription]) -> Result<()> {
+        let json = serde_json::to_string(subs).map_err(|e| Error::Invalid(e.to_string()))?;
+        c.execute(
+            "INSERT INTO meta (key, value) VALUES ('push_subscriptions', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [json],
+        )?;
+        Ok(())
     }
 
     /// Seconds from `at` (an ISO time) to now; `None` when SQLite cannot read `at` as a time.

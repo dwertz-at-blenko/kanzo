@@ -38,6 +38,14 @@ const LCARS_CSS: &str = include_str!("lcars.css");
 const SKELETAL_CSS: &str = include_str!("skeletal.css");
 /// Antonio, variable weight, SIL Open Font License (fonts/OFL.txt); the LCARS typeface.
 const ANTONIO: &[u8] = include_bytes!("fonts/antonio.woff2");
+/// The service worker: shows a notification when kanzo-dispatch sends an empty push, and opens
+/// the card on a tap. Served from the root so its scope is the whole board.
+const SW_JS: &str = include_str!("sw.js");
+/// "Install app" on a phone. Colours from the stock theme; icons made from logo.png.
+const MANIFEST: &str = r##"{"id":"/","name":"Kanzo","short_name":"Kanzo","start_url":"/","scope":"/","display":"standalone","theme_color":"#ffffff","background_color":"#ffffff","icons":[{"src":"/icon-192.png","sizes":"192x192","type":"image/png","purpose":"any"},{"src":"/icon-512.png","sizes":"512x512","type":"image/png","purpose":"any"},{"src":"/icon-maskable-512.png","sizes":"512x512","type":"image/png","purpose":"maskable"}]}"##;
+const ICON_192: &[u8] = include_bytes!("icons/icon-192.png");
+const ICON_512: &[u8] = include_bytes!("icons/icon-512.png");
+const ICON_MASKABLE: &[u8] = include_bytes!("icons/icon-maskable-512.png");
 /// Each theme's version, also on the first line of its stylesheet and in its
 /// `--theme-version` (a test checks they agree). Bump it with every visible change.
 const LCARS_VERSION: &str = "0.3";
@@ -49,7 +57,8 @@ const SKELETAL_VERSION: &str = "0.2";
 const REMOTE_BEARER: &str = "KANZO_REMOTE_BEARER";
 
 const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; \
-                   font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+                   font-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; base-uri 'none'; \
+                   form-action 'none'; frame-ancestors 'none'";
 
 pub async fn serve(home: Home, open: bool) -> Result<()> {
     let port = home.config.port;
@@ -223,6 +232,23 @@ fn router(home: Home, guard: Arc<Guard>, shutdown: CancellationToken, remote: Op
         .route("/skeletal.css", get(|| async { ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], SKELETAL_CSS) }))
         .route("/fonts/antonio.woff2", get(|| async { ([(header::CONTENT_TYPE, "font/woff2")], ANTONIO) }))
         .route("/logo.png", get(|| async { ([(header::CONTENT_TYPE, "image/png")], LOGO) }))
+        .route(
+            "/manifest.webmanifest",
+            get(|| async { ([(header::CONTENT_TYPE, "application/manifest+json")], MANIFEST) }),
+        )
+        .route(
+            "/sw.js",
+            get(|| async {
+                ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8"), (header::CACHE_CONTROL, "no-cache")], SW_JS)
+            }),
+        )
+        .route("/icon-192.png", get(|| async { ([(header::CONTENT_TYPE, "image/png")], ICON_192) }))
+        .route("/icon-512.png", get(|| async { ([(header::CONTENT_TYPE, "image/png")], ICON_512) }))
+        .route("/icon-maskable-512.png", get(|| async { ([(header::CONTENT_TYPE, "image/png")], ICON_MASKABLE) }))
+        // This board's own, not forwarded when it joins another: the dispatcher that pushes is here.
+        .route("/api/push", get(push))
+        .route("/api/push/subscribe", post(push_subscribe))
+        .route("/api/push/unsubscribe", post(push_unsubscribe))
         .route("/api/ping", get(|| async { "kanzo" }))
         .route("/api/version", get(version))
         .route("/api/update", get(update_status).post(update_now))
@@ -601,6 +627,114 @@ fn agents_reply(home: &Home, s: &Store, guest: bool) -> serde_json::Value {
 async fn agents(State(home): Shared, req: Request) -> Response {
     let guest = guest(&req).is_some();
     with_store(home, move |h, s| Ok(agents_reply(h, s, guest))).await
+}
+
+/// Push hosts the browsers use: Chrome (FCM), Firefox, Edge, Safari. kanzo-dispatch POSTs to
+/// every stored endpoint, so nothing else is stored and the server never calls a URL a page picked.
+const PUSH_HOSTS: [&str; 2] = ["fcm.googleapis.com", "updates.push.services.mozilla.com"];
+const PUSH_HOST_SUFFIXES: [&str; 2] = [".notify.windows.com", ".push.apple.com"];
+
+/// `https://` on a known push service, no user info, no port, printable ASCII only.
+pub fn push_endpoint_ok(endpoint: &str) -> bool {
+    let Some(rest) = endpoint.strip_prefix("https://") else { return false };
+    if endpoint.len() > 1024 || !endpoint.bytes().all(|b| b.is_ascii_graphic()) {
+        return false;
+    }
+    let host = rest.split(['/', '?', '#']).next().unwrap_or_default().to_ascii_lowercase();
+    if host.is_empty() || host.contains(['@', ':', '\\']) {
+        return false;
+    }
+    PUSH_HOSTS.contains(&host.as_str())
+        || PUSH_HOST_SUFFIXES.iter().any(|s| {
+            host.strip_suffix(s).is_some_and(|sub| {
+                !sub.is_empty()
+                    && !sub.starts_with('.')
+                    && sub.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.')
+            })
+        })
+}
+
+/// The dispatcher's public key from its status file: 65 bytes, base64url without padding, so
+/// 87 characters; "" when the file, the field or push is missing.
+fn push_key(home: &Home) -> String {
+    let key = std::fs::read(home.dir.join(AGENTS_FILE))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        .and_then(|v| v.get("push_key").and_then(|k| k.as_str()).map(String::from))
+        .unwrap_or_default();
+    let ok = key.len() == 87 && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+    if ok { key } else { String::new() }
+}
+
+/// What the page needs to offer push: the server key and how many browsers have it. A guest
+/// gets the empty reply, so the page says push is not set up.
+fn push_reply(home: &Home, s: &Store, guest: bool) -> store::Result<serde_json::Value> {
+    if guest {
+        return Ok(json!({ "key": "", "subscriptions": 0 }));
+    }
+    Ok(json!({ "key": push_key(home), "subscriptions": s.push_subscriptions()?.len() }))
+}
+
+async fn push(State(home): Shared, req: Request) -> Response {
+    let guest = guest(&req).is_some();
+    with_store(home, move |h, s| push_reply(h, s, guest)).await
+}
+
+#[derive(Deserialize)]
+struct PushIn {
+    endpoint: String,
+    #[serde(default)]
+    keys: Option<store::PushKeys>,
+    #[serde(default)]
+    label: String,
+}
+
+fn base64url(s: &str, max: usize) -> bool {
+    !s.is_empty() && s.len() <= max && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_=".contains(&b))
+}
+
+/// Adds (`add`) or removes one browser's subscription. Never echoes the endpoint back.
+fn push_write(home: Arc<Home>, guest: bool, body: &[u8], add: bool) -> Result<impl Future<Output = Response>, Fail> {
+    if guest {
+        return Err(fail(StatusCode::FORBIDDEN, "notifications are for the computer with the board"));
+    }
+    let p: PushIn = serde_json::from_slice(body).map_err(|e| fail(StatusCode::BAD_REQUEST, e))?;
+    if !push_endpoint_ok(&p.endpoint) {
+        return Err(fail(StatusCode::BAD_REQUEST, "not a push service this board sends to"));
+    }
+    let keys = match (add, p.keys) {
+        (false, _) => None,
+        (true, Some(k)) if base64url(&k.p256dh, 128) && base64url(&k.auth, 64) => Some(k),
+        (true, _) => return Err(fail(StatusCode::BAD_REQUEST, "the subscription needs keys.p256dh and keys.auth")),
+    };
+    let label: String = p.label.chars().filter(|c| !c.is_control()).take(60).collect();
+    Ok(with_store(home, move |_, s| {
+        let n = match &keys {
+            Some(k) => s.add_push_subscription(&p.endpoint, &k.p256dh, &k.auth, label.trim())?,
+            None => s.remove_push_subscription(&p.endpoint)?,
+        };
+        Ok(json!({ "subscriptions": n }))
+    }))
+}
+
+async fn push_body(home: Arc<Home>, req: Request, add: bool) -> Response {
+    let guest = guest(&req).is_some();
+    let body = match axum::body::to_bytes(req.into_body(), 16 * 1024).await {
+        Ok(b) => b,
+        Err(e) => return fail(StatusCode::BAD_REQUEST, e).into_response(),
+    };
+    match push_write(home, guest, &body, add) {
+        Ok(write) => write.await,
+        Err(e) => e.into_response(),
+    }
+}
+
+async fn push_subscribe(State(home): Shared, req: Request) -> Response {
+    push_body(home, req, true).await
+}
+
+async fn push_unsubscribe(State(home): Shared, req: Request) -> Response {
+    push_body(home, req, false).await
 }
 
 async fn inbox(State(home): Shared) -> Response {
@@ -1353,6 +1487,164 @@ mod tests {
         assert_eq!(agents_reply(&home, &s, true), json!({ "alive": false, "sessions": [], "cards": {}, "queue": [] }));
         assert_eq!(agents_token(&home, &s, true), "none");
         assert_eq!(agents_token(&home, &s, false), "1-true");
+    }
+
+    /// The phone app: a manifest the page links with cookies, icons of the sizes it names, and a
+    /// worker served from the root that is never cached.
+    #[test]
+    fn the_manifest_and_the_worker() {
+        let m: Value = serde_json::from_str(MANIFEST).unwrap();
+        assert_eq!(
+            (&m["name"], &m["short_name"], &m["start_url"], &m["scope"]),
+            (&json!("Kanzo"), &json!("Kanzo"), &json!("/"), &json!("/"))
+        );
+        assert_eq!(m["display"], "standalone");
+        let png_size = |b: &[u8]| {
+            (u32::from_be_bytes(b[16..20].try_into().unwrap()), u32::from_be_bytes(b[20..24].try_into().unwrap()))
+        };
+        let files: HashMap<&str, &[u8]> =
+            [("/icon-192.png", ICON_192), ("/icon-512.png", ICON_512), ("/icon-maskable-512.png", ICON_MASKABLE)]
+                .into();
+        let mut maskable = false;
+        for icon in m["icons"].as_array().unwrap() {
+            let bytes = files[icon["src"].as_str().unwrap()];
+            assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+            let (w, h) = png_size(bytes);
+            assert_eq!(icon["sizes"], format!("{w}x{h}"));
+            maskable |= icon["purpose"] == "maskable";
+        }
+        assert!(maskable);
+        for tag in [
+            "<link rel=\"manifest\" href=\"/manifest.webmanifest\" crossorigin=\"use-credentials\">",
+            "<meta name=\"theme-color\"",
+            "<link rel=\"apple-touch-icon\" href=\"/icon-192.png\">",
+        ] {
+            assert!(INDEX.contains(tag), "{tag}");
+        }
+        assert!(CSP.contains("manifest-src 'self'") && CSP.contains("worker-src 'self'"));
+        assert!(SW_JS.contains("\"push\"") && SW_JS.contains("\"notificationclick\""));
+        assert!(APP_JS.contains("register(\"/sw.js\")"));
+        block_on(async {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (_dir, _home, port) = board(None).await;
+            for (path, kind, body) in [
+                ("/sw.js", "text/javascript", SW_JS.as_bytes()),
+                ("/manifest.webmanifest", "application/manifest+json", MANIFEST.as_bytes()),
+                ("/icon-maskable-512.png", "image/png", ICON_MASKABLE),
+            ] {
+                let mut conn = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+                conn.write_all(format!("GET {path} HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n").as_bytes()).await.unwrap();
+                let mut reply = Vec::new();
+                conn.read_to_end(&mut reply).await.unwrap();
+                let split = reply.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+                let head = String::from_utf8_lossy(&reply[..split]).to_ascii_lowercase();
+                assert!(head.starts_with("http/1.0 200"), "{path}: {head}");
+                assert!(head.contains(&format!("content-type: {kind}")), "{path}: {head}");
+                assert!(head.contains("cache-control: no-cache"), "{path}: {head}");
+                assert_eq!(&reply[split + 4..], body, "{path}");
+            }
+        });
+    }
+
+    #[test]
+    fn only_known_push_services_are_stored() {
+        for ok in [
+            "https://fcm.googleapis.com/fcm/send/abc:DEF-123",
+            "https://FCM.googleapis.com/wp/abc",
+            "https://updates.push.services.mozilla.com/wpush/v2/abc",
+            "https://wns2-db5p.notify.windows.com/w/?token=abc",
+            "https://web.push.apple.com/QGrz",
+        ] {
+            assert!(push_endpoint_ok(ok), "{ok}");
+        }
+        for bad in [
+            "http://fcm.googleapis.com/fcm/send/abc",
+            "https://fcm.googleapis.com:8443/x",
+            "https://user@fcm.googleapis.com/x",
+            "https://evil.com/fcm.googleapis.com",
+            "https://fcm.googleapis.com.evil.com/x",
+            "https://fcm.googleapis.com./x",
+            "https://evil.com\\@fcm.googleapis.com/x",
+            "https://evil.com#.push.apple.com",
+            "https://notify.windows.com/x",
+            "https://.push.apple.com/x",
+            "https://a_b.push.apple.com/x",
+            "https://127.0.0.1/x",
+            "https://localhost/x",
+            "https://fcm.googleapis.com/a b",
+            "",
+            "fcm.googleapis.com/x",
+        ] {
+            assert!(!push_endpoint_ok(bad), "{bad}");
+        }
+        assert!(!push_endpoint_ok(&format!("https://fcm.googleapis.com/{}", "a".repeat(1024))));
+    }
+
+    fn subscription(n: usize, label: &str) -> String {
+        json!({ "endpoint": format!("https://fcm.googleapis.com/fcm/send/fake{n}"), "expirationTime": null,
+                "keys": { "p256dh": "BFakeKey_-123", "auth": "fakeAuth" }, "label": label })
+        .to_string()
+    }
+
+    #[test]
+    fn push_subscriptions_are_kept_in_meta_newest_first() {
+        block_on(async {
+            let (_dir, home, port) = board(None).await;
+            let get = || http(port, "GET", "/api/push", "");
+            assert_eq!(get().await, (200, json!({ "key": "", "subscriptions": 0 }).to_string()));
+            let key = format!("B{}", "x".repeat(86));
+            write_agents(&home, &json!({ "rev": 1, "push_key": key }).to_string());
+            assert_eq!(serde_json::from_str::<Value>(&get().await.1).unwrap()["key"], json!(key));
+            write_agents(&home, r#"{"rev": 1, "push_key": "short"}"#);
+            assert_eq!(serde_json::from_str::<Value>(&get().await.1).unwrap()["key"], json!(""));
+
+            let sub = |body: String| async move { http(port, "POST", "/api/push/subscribe", &body).await };
+            assert_eq!(sub(subscription(1, "Chrome on Android")).await, (200, r#"{"subscriptions":1}"#.into()));
+            assert_eq!(sub(subscription(1, "again")).await.1, r#"{"subscriptions":1}"#, "same endpoint: replaced");
+            let s = home.store().unwrap();
+            assert_eq!(s.push_subscriptions().unwrap()[0].label, "again");
+            assert_eq!(s.push_subscriptions().unwrap()[0].added.len(), 20);
+            for n in 2..=11 {
+                sub(subscription(n, "")).await;
+            }
+            let kept: Vec<String> = s.push_subscriptions().unwrap().into_iter().map(|p| p.endpoint).collect();
+            assert_eq!(kept.len(), 10);
+            assert!(kept[0].ends_with("/fake11") && kept[9].ends_with("/fake2"), "{kept:?}");
+
+            let bad = subscription(1, "").replace("fcm.googleapis.com", "evil.example");
+            assert_eq!(sub(bad).await.0, 400);
+            assert_eq!(sub(r#"{"endpoint": "https://fcm.googleapis.com/x"}"#.into()).await.0, 400, "no keys");
+            assert_eq!(sub(subscription(1, "").replace("BFakeKey_-123", "not base64!")).await.0, 400);
+            assert_eq!(sub("not json".into()).await.0, 400);
+            let (code, body) = sub(subscription(12, "")).await;
+            assert!(code == 200 && !body.contains("fake12"), "the endpoint never comes back: {body}");
+
+            let gone = json!({ "endpoint": "https://fcm.googleapis.com/fcm/send/fake11" }).to_string();
+            assert_eq!(
+                http(port, "POST", "/api/push/unsubscribe", &gone).await,
+                (200, r#"{"subscriptions":9}"#.into())
+            );
+            assert_eq!(serde_json::from_str::<Value>(&get().await.1).unwrap()["subscriptions"], json!(9));
+            assert!(!get().await.1.contains("fcm.googleapis.com"));
+        });
+    }
+
+    /// A computer that joined over the LAN neither sees the key nor adds a browser.
+    #[test]
+    fn a_guest_gets_no_push() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Arc::new(Home::open(dir.path().to_path_buf()).unwrap());
+        let s = home.store().unwrap();
+        write_agents(&home, &json!({ "push_key": format!("B{}", "x".repeat(86)) }).to_string());
+        assert_eq!(push_reply(&home, &s, true).unwrap(), json!({ "key": "", "subscriptions": 0 }));
+        assert_eq!(push_reply(&home, &s, false).unwrap()["key"].as_str().unwrap().len(), 87);
+        for add in [true, false] {
+            let Err(Fail(code, _)) = push_write(home.clone(), true, subscription(1, "").as_bytes(), add) else {
+                panic!("a guest wrote a subscription")
+            };
+            assert_eq!(code, StatusCode::FORBIDDEN);
+        }
+        assert!(s.push_subscriptions().unwrap().is_empty());
     }
 
     #[test]
