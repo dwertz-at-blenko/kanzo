@@ -1,4 +1,4 @@
-/* Skeletal LCARS theme v0.1 */
+/* Skeletal LCARS theme v0.2 */
 /*
  * Skeletal LCARS: the dark, hairline, high-chroma terminal designed in Google Stitch
  * (docs/themes/skeletal/stitch-code.html is the original). Every rule sits under
@@ -26,7 +26,7 @@
 }
 
 html[data-theme="skeletal"] {
-  --theme-version: "0.1";
+  --theme-version: "0.2";
 
   /* Trek functional high-chroma spectrum */
   --sk-void: #000000;
@@ -62,6 +62,9 @@ html[data-theme="skeletal"] {
   --code: rgba(255, 255, 255, 0.05); --shadow: 0 10px 34px rgba(0, 0, 0, 0.85);
   color-scheme: dark;
   scrollbar-color: var(--sk-ghost) transparent;
+  /* Delegation: agents teal, review amber, trouble coral, resolved emerald, the operator's star gold. */
+  --agent: var(--sk-teal); --review: var(--sk-amber); --review-bg: rgba(251, 146, 60, 0.1); --warn: var(--sk-coral);
+  --warn-bg: rgba(244, 63, 94, 0.08); --ok: var(--sk-emerald); --ok-bg: rgba(16, 185, 129, 0.08); --star: var(--sk-gold);
 }
 
 html[data-theme="skeletal"] {
@@ -291,6 +294,55 @@ html[data-theme="skeletal"] {
   & .offline { background: var(--sk-crimson); color: #000; border-radius: 2px; font-family: var(--sk-mono); letter-spacing: .04em; text-transform: uppercase; }
   & ::highlight(filter), & ::highlight(search) { background-color: rgba(250, 204, 21, 0.3); }
 
+  /* ---------- Delegation: sidebar sections, Inbox and Agents, the agent strip ---------- */
+  & .nav .sec {
+    margin-top: 12px; padding: 5px 10px; border-radius: 0; border-bottom: 1px solid var(--sk-hairline);
+    font-family: var(--sk-mono); font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--sk-cyan);
+  }
+  & .nav .sec .count { color: var(--sk-lavender); }
+  & .nav .sec:hover, & .nav .sec:focus-visible { background: var(--hover); color: var(--sk-cyan); }
+  & input.nav-find { font-family: var(--sk-mono); font-size: 12px; letter-spacing: .04em; }
+  & .nav a .pill { border-radius: 2px; font-family: var(--sk-mono); font-size: 10.5px; letter-spacing: 0; }
+  & .nav a .fresh { box-shadow: 0 0 6px var(--sk-cyan); }
+  & .nav a .agent-dot { box-shadow: 0 0 6px var(--sk-teal); }
+  & .nav .star { border-radius: 2px; }
+  & .nav .item:is(:hover, :focus-within, .menu-open) a { padding-right: 68px; }
+  @media (hover: none) { & .nav .item a { padding-right: 82px; } }
+  & .nav-none { font-family: var(--sk-mono); font-size: 11.5px; }
+  & .view-group > h2, & .view-group > summary {
+    padding-bottom: 5px; border-bottom: 1px solid var(--sk-hairline); font-family: var(--sk-mono); font-size: 10.5px;
+    font-weight: 400; letter-spacing: .12em; text-transform: uppercase; color: var(--sk-cyan);
+  }
+  & .view-group .count { color: var(--sk-lavender); }
+  /* Razor rows, one anchor each: what waits on you gold, review amber, done emerald, sessions by state. */
+  & .view-row { border-radius: 4px; border-left: 3px solid var(--sk-blue-lead); background: var(--card); }
+  & [data-group="waiting"] .view-row { border-left-color: var(--sk-gold); }
+  & [data-group="review"] .view-row { border-left-color: var(--sk-amber); }
+  & [data-group="finished"] .view-row { border-left-color: var(--sk-emerald); }
+  & .view-row.session { border-left-color: var(--sk-ghost); }
+  & .view-row.session[data-state="working"] { border-left-color: var(--sk-teal); }
+  & .view-row.session[data-state="idle"] { border-left-color: var(--sk-cyan); }
+  & .view-row.session[data-state="blocked"] { border-left-color: var(--sk-coral); }
+  & .view-row .key, & .card-link .mono, & .session .folder, & .session .tokens { font-family: var(--sk-mono); font-size: 10.5px; }
+  & .view-row .last b { font-family: var(--sk-mono); font-size: 11px; color: var(--sk-lavender); }
+  & .chip-project {
+    border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 2px; background: rgba(255, 255, 255, 0.03); color: var(--sk-ice);
+    font-family: var(--sk-mono); font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
+  }
+  & .session .state, & .watcher { font-family: var(--sk-mono); font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; }
+  & .watcher { border: 1px solid var(--sk-hairline); }
+  & .watcher.ok .dot { box-shadow: 0 0 6px var(--sk-emerald); animation: sk-blink 2s ease-in-out infinite; }
+  & .watcher.down { border-color: rgba(244, 63, 94, 0.3); border-radius: 4px; }
+  & .view-link { border-radius: 2px; letter-spacing: .06em; text-transform: uppercase; }
+  & .agent-strip { border: 1px solid var(--sk-hairline-card); border-left: 3px solid var(--sk-ghost); border-radius: 4px; background: var(--card); }
+  & .agent-strip:is([data-state="working"], [data-state="queued"], [data-state="starting"]) { border-left-color: var(--sk-teal); }
+  & .agent-strip[data-state="idle"] { border-left-color: var(--sk-cyan); }
+  & .agent-strip:is([data-state="blocked"], [data-state="silent"], [data-state="unreachable"], [data-state="failed"], [data-state="down"]) { border-left-color: var(--sk-coral); }
+  & .agent-strip .say b { letter-spacing: .08em; text-transform: uppercase; }
+  & .agent-strip .detail, & .agent-strip .session, & .agent-warn { font-family: var(--sk-mono); font-size: 11px; }
+  & .comment .note-tag { border-radius: 2px; font-family: var(--sk-mono); font-size: 10px; text-transform: uppercase; }
+  & .comment .delivery, & .comment.command { font-family: var(--sk-mono); font-size: 10.5px; letter-spacing: .04em; }
+
   /* ---------- Phones ---------- */
   @media (max-width: 700px) {
     & aside { padding: 8px 10px; border-right: 0; border-bottom: 1px solid var(--sk-hairline); }
@@ -303,10 +355,11 @@ html[data-theme="skeletal"] {
     & header h1 { font-size: 18px; }
     & header .info::after { display: none; }
     & .columns { padding: 0 12px 12px; gap: 12px; }
+    & .nav .sec { margin: 0; border-bottom: 0; }
   }
 
   @media (prefers-reduced-motion: reduce) {
-    & .card[data-alert="red"], & .theme-version::before { animation: none; }
+    & .card[data-alert="red"], & .theme-version::before, & .watcher.ok .dot { animation: none; }
     & .card, & .card:hover { transition: none; transform: none; }
   }
 }

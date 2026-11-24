@@ -1,4 +1,4 @@
-/* LCARS theme v0.2 */
+/* LCARS theme v0.3 */
 /*
  * Version: v0.1 · created 2026-11-07 · updated 2026-11-07
  * Changes: v0.1 first cut: elbow frame, sidebar bars, column header bars with readouts, capped cards, alert pulse.
@@ -30,7 +30,7 @@
 }
 
 html[data-theme="lcars"] {
-  --theme-version: "0.2";
+  --theme-version: "0.3";
   --lcars-cool-blue: #6699FF;
   --lcars-midnight: #0048F0;
   --lcars-anakiwa: #99CCFF;
@@ -56,6 +56,9 @@ html[data-theme="lcars"] {
   --accent: var(--lcars-neon-carrot); --accent-text: #000; --danger: #ff5c6c; --danger-bg: rgb(218 37 55 / .18);
   --link: var(--lcars-anakiwa); --code: var(--lcars-panel-hi); --shadow: 0 12px 40px rgb(0 0 0 / .8);
   color-scheme: dark;
+  /* Delegation: an agent at work is active work, what waits on you is Honey. */
+  --agent: var(--lcars-neon-carrot); --review: var(--lcars-honey); --review-bg: #000; --warn: var(--lcars-atomic-tangerine);
+  --warn-bg: rgb(255 102 51 / .16); --ok: var(--lcars-anakiwa); --ok-bg: var(--lcars-panel-hi); --star: #000;
 
   & body { grid-template-columns: var(--lcars-side) minmax(0, 1fr); background: #000; }
 
@@ -280,6 +283,64 @@ html[data-theme="lcars"] {
   .offline { background: var(--lcars-cardinal); color: #000; font-weight: 600; }
   .empty h1 { color: var(--lcars-neon-carrot); font-size: 28px; }
 
+  /* ---- Delegation: sidebar sections, Inbox and Agents, the panel's agent strip ---- */
+  .nav .sec {
+    justify-content: flex-end; margin-top: 8px; padding: 6px 12px 2px; border-radius: 0; color: var(--lcars-cool-blue);
+    font-family: var(--lcars-label); font-size: 12px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase;
+  }
+  .nav .sec .name { flex: none; }
+  .nav .sec .count { order: -1; margin-right: auto; }
+  .nav .sec:hover, .nav .sec:focus-visible { background: none; color: var(--lcars-anakiwa); }
+  input.nav-find { margin: 8px 0 2px; border-radius: 0; }
+  /* Marks on a bar are black ink: a ring for new, a pulsing light for an agent at work. */
+  .nav a .fresh { width: 9px; height: 9px; background: none; box-shadow: inset 0 0 0 2px #000; }
+  .nav a .agent-dot { width: 9px; height: 9px; background: #000; }
+  .nav a .pill { background: #000; color: var(--lcars-honey); font-family: var(--lcars-label); font-size: 13px; line-height: 17px; }
+  /* The star sits beside More, on the left, so the right-aligned names never move. */
+  .nav .star { left: 58px; right: auto; color: #000; }
+  /* The indicator light is for the project's folder only; the buttons keep their glyphs. */
+  .nav .item :is(.star, .more) .icon { width: auto; height: auto; border-radius: 0; background: none; box-shadow: none; }
+  .nav .item :is(.star, .more) .icon svg { display: block; }
+  .nav .star.on svg { fill: #000; }
+  .nav .star:hover { background: rgb(0 0 0 / .12); color: #000; }
+  .nav .item:is(:hover, :focus-within, .menu-open) a { padding-right: 12px; }
+  .nav .item:is(:hover, :focus-within, .menu-open) a .name { padding-left: 36px; }
+  .nav-none { color: var(--lcars-cool-blue); text-align: right; }
+  @media (hover: none) {
+    .nav .star { left: 66px; }
+    .nav .item a, .nav .item:is(:hover, :focus-within, .menu-open) a { padding-right: 12px; }
+    .nav .item a .name, .nav .item:is(:hover, :focus-within, .menu-open) a .name { padding-left: 50px; }
+  }
+
+  .view { padding: 0 24px 24px 36px; }
+  .view-group > h2, .view-group > summary {
+    color: var(--lcars-anakiwa); font-family: var(--lcars-label); font-size: 15px; letter-spacing: .06em; text-transform: uppercase;
+  }
+  .view-group > h2::after, .view-group > summary::after { content: ""; flex: 1; height: 2px; background: var(--lcars-mariner); }
+  .view-group .count { color: var(--lcars-cool-blue); font-weight: 700; }
+  .view-row { border: 0; border-left: 8px solid var(--lcars-mariner); border-radius: 14px 3px 3px 14px; background: var(--lcars-panel); }
+  .view-row:hover, .view-row:focus-visible { background: var(--lcars-panel-hi); }
+  [data-group="waiting"] .view-row { border-left-color: var(--lcars-honey); }
+  [data-group="finished"] .view-row { border-left-color: var(--lcars-lilac); }
+  .view-row.session[data-state="working"] { border-left-color: var(--lcars-neon-carrot); }
+  .view-row.session[data-state="blocked"] { border-left-color: var(--lcars-atomic-tangerine); }
+  .view-row .key, .card-link .mono, .session .folder, .session .tokens { color: var(--lcars-cool-blue); }
+  .chip-project, .session .state, .watcher, .view-link, .agent-strip .say b {
+    font-family: var(--lcars-label); text-transform: uppercase; letter-spacing: .06em; font-weight: 700;
+  }
+  .chip-project { background: #000; color: var(--lcars-cool-blue); box-shadow: inset 0 0 0 1.5px var(--lcars-mariner); }
+  .watcher.ok { background: var(--lcars-anakiwa); color: #000; }
+  .watcher.ok .dot { background: #000; }
+  .watcher.down { background: var(--lcars-atomic-tangerine); color: #000; }
+  .agent-strip { margin: 12px 22px 0 30px; border-radius: 3px 14px 14px 3px; background: var(--lcars-panel); }
+  .agent-strip .say b { color: var(--lcars-honey); }
+  .agent-strip .btn { padding: 4px 14px 3px; }
+  .agent-warn { color: var(--lcars-atomic-tangerine); }
+  .comment.dispatch .who b { color: var(--lcars-cool-blue); }
+  .comment .note-tag { background: #000; color: var(--lcars-lilac); box-shadow: inset 0 0 0 1.5px var(--lcars-lilac); }
+  /* On the card's cap. */
+  .card[data-agent-state]::before { left: -8px; top: 12px; box-shadow: 0 0 0 2px #000; }
+
   /* ---- Phones and narrow windows: the frame folds into a top bar ---- */
   @media (max-width: 900px) {
     & body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
@@ -305,5 +366,19 @@ html[data-theme="lcars"] {
     .panel .body { padding: 14px 16px 24px 18px; }
     .settings-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
     #settings-nav { flex-direction: row; border-right: 0; border-bottom: 2px solid var(--lcars-mariner); }
+    /* Views and sections each scroll sideways as pills, the find box between them. */
+    .nav { flex-direction: column; overflow: visible; min-width: 0; }
+    .nav-views, .nav-sections { flex-direction: row; overflow-x: auto; gap: 4px; }
+    input.nav-find { margin: 0; }
+    .nav .sec { flex: none; width: auto; margin: 0; padding: 4px 10px; align-items: center; }
+    .nav .star { left: auto; right: 34px; }
+    .nav .item:is(:hover, :focus-within, .menu-open) a { padding-right: 68px; }
+    .nav .item a .name, .nav .item:is(:hover, :focus-within, .menu-open) a .name { padding-left: 0; }
+    @media (hover: none) {
+      .nav .star { right: 42px; }
+      .nav .item a, .nav .item:is(:hover, :focus-within, .menu-open) a { padding-right: 82px; }
+    }
+    .view { padding: 0 12px 12px; }
+    .agent-strip { margin: 10px 16px 0 18px; }
   }
 }

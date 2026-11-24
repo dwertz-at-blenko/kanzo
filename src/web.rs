@@ -40,8 +40,8 @@ const SKELETAL_CSS: &str = include_str!("skeletal.css");
 const ANTONIO: &[u8] = include_bytes!("fonts/antonio.woff2");
 /// Each theme's version, also on the first line of its stylesheet and in its
 /// `--theme-version` (a test checks they agree). Bump it with every visible change.
-const LCARS_VERSION: &str = "0.2";
-const SKELETAL_VERSION: &str = "0.1";
+const LCARS_VERSION: &str = "0.3";
+const SKELETAL_VERSION: &str = "0.2";
 
 /// Scripts only from this server, so even a bug in the Markdown renderer cannot run injected script.
 /// Turns on `/mcp-remote` when set: MCP for agents outside this machine (a claude.ai connector
