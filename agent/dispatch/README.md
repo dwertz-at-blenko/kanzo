@@ -105,8 +105,9 @@ key, like `api#12 Fix the login`, so `claude attach api#12` finds it.
 | Follow-up, terminal session | `herdr agent list` for the pane, then `herdr agent prompt <pane> <text>` (`--herdr`, default `~/.local/bin/herdr`); waits while the pane is working or blocked |
 | Stop | `claude stop <id>`, only ever on a session the dispatcher started |
 
-`claude` and `tmux` get the dispatcher's environment minus anything named like a token, secret,
-password, credential or key.
+`claude`, `tmux` and `herdr` get the dispatcher's environment minus anything named like a token,
+secret, password, credential, API or private key, or VAPID. The push key is also taken out of the
+dispatcher's own environment before anything else runs (see Push).
 
 ## State
 
@@ -133,6 +134,8 @@ mode 0600, atomically. The board reads it; the shape is fixed by a contract the 
 | `sessions` | Every live Claude session on the box: `id` (short), `session_id`, `name`, `kind`, `state` (`working`, `idle`, `blocked`, `ended`), `detail` (160 chars), `folder`, `started`, `tokens`, `link`, `origin` (`dispatch`, `adopted`, `other`), `cards` it owns |
 | `cards` | Keyed by task id: `session`, `origin`, `state` (`queued`, `starting`, `working`, `idle`, `blocked`, `ended`, `unreachable`, `silent`, `failed`), `since`, `note`, and `comments`: a receipt per handled comment (`started`, `delivered`, `waiting`, `queued`, `failed`, `held`, `command`) with `at` and `note` |
 | `queue` | Starts waiting for a free slot, oldest first: `task`, `comment`, `at` |
+| `push_key` | The Web Push public key (uncompressed P-256 point, base64url, no padding); "" when push is off. The board hands it to the page at `GET /api/push` |
+| `push` | `on`, `subscriptions` (browsers it would send to), `last_sent` (ISO or ""), `last_error` (host and code only). Never an endpoint |
 
 A card's owner is the dispatcher's attached session, else the live session with the latest kanzo
 write on it; a done card shows no owner unless the dispatcher has a session on it. The session list
@@ -141,19 +144,44 @@ job file (`~/.claude/jobs/<id>/state.json`) is read every pass for `detail`, `to
 transcripts are read incrementally, at most 64 MiB per pass, so a restart catches up over a few
 passes. `[note]` comments never appear. "Answered" is not in the file: the board works it out.
 
+## Push
+
+The board can notify a phone when an agent answers, with the board closed. The page subscribes the
+browser (Settings, Notifications) and the board keeps the subscription in its `meta` table
+(`push_subscriptions`, at most 10, only `https://` endpoints on FCM, Mozilla, Windows or Apple push
+hosts). Each pass the dispatcher reads `GET /api/inbox` once: a card new in `waiting`, or whose last
+comment moved, is news. The first pass after a start only records. Then every browser is owed one
+push; a round sends at most one push per browser, at most every 30 s, in a thread with a 10 s
+timeout, so several answers collapse into one push and a slow push service never holds up a pass.
+
+| What | How |
+|---|---|
+| Key | `KANZO_VAPID_PRIVATE_KEY` from the vault (`deploy/run-dispatch.sh`): base64 of the SEC1 DER of a P-256 private key, one line. Taken out of `os.environ` before anything else runs, never logged, never written. Missing or unreadable: push is off, one log line, everything else works |
+| Make a key | In your own terminal: `openssl ecparam -genkey -name prime256v1 -noout -outform DER \| base64 -w0`, then paste the line into the vault web app as `KANZO_VAPID_PRIVATE_KEY` in the dispatcher's project. A new key means every browser switches notifications on again |
+| Signing | ES256 through the system `cryptography` package, imported only when a key is set: the one import outside the standard library. Missing: push is off, one log line |
+| Subscriptions | Read-only from `kanzo.db` (`--db`), never over HTTP: no route returns an endpoint. The board has no loopback-only route it could trust, because the public URL arrives through cloudflared on loopback too |
+| What leaves the box | One empty POST per browser to its push service: `Authorization: vapid t=<JWT>, k=<public key>`, `TTL: 3600`, `Urgency: normal`, `Topic: kanzo-inbox`, `Content-Length: 0`, no body. JWT: `aud` the push service origin, `exp` 12 h (reused until an hour before), `sub` `https://kanzo.blenko.cloud`. Nothing about a card: the phone's service worker reads the inbox itself, with its own login |
+| 404 or 410 | The browser is gone: a hash of its endpoint goes to `push_dead` in state.json (newest 50) and it is skipped from then on. The board's row stays until the page unsubscribes or 10 newer browsers push it out |
+| 429, 5xx, no answer | That browser waits 60 s, doubling to an hour (or `Retry-After`), then gets the push it is owed; owed pushes expire after an hour |
+| Off | `--no-push`, or no key |
+
+The phone: when the board's login (Cloudflare Access, 24 h) has expired, the worker cannot read the
+inbox and shows "Kanzo: an agent answered"; a tap opens the Inbox, which asks for the login.
+
 ## Run
 
     agent/dispatch/kanzo_dispatch.py --once --dry-run   # what it would do; writes nothing
     agent/dispatch/kanzo_dispatch.py --loop --interval 5
     agent/dispatch/kanzo_dispatch.py --loop --burst 5 --idle-stop 3600   # the defaults
-    python3 agent/dispatch/test_dispatch.py             # throwaway board on 127.0.0.1:8198, fake claude and herdr
+    agent/dispatch/kanzo_dispatch.py --loop --no-push   # no Web Push even with the key set
+    python3 agent/dispatch/test_dispatch.py             # throwaway board on 127.0.0.1:8198, fake claude, herdr and push service
     KANZO_TEST_PORT=8196 python3 -W error::ResourceWarning agent/dispatch/test_dispatch.py   # another port
 
 The service is `deploy/kanzo-dispatch.service` (see `deploy/README.md`).
 
 ---
 
-> **Version:** v3 · created 2026-11-21 13:26 EST · updated 2026-11-24
-> **Changes:** v3 2026-11-24 status.json for the board ("What the board shows"); `@claude start`; nudge, then flag; burst guard; resume an ended session; idle stop on done cards; pictures in a follow-up; flags `--status`, `--burst`, `--idle-stop`. v2 2026-11-23 a comment goes to the live session already on the card; `@claude new`; stop only detaches an adopted session. v1 initial.
+> **Version:** v4 · created 2026-11-21 13:26 EST · updated 2026-11-24
+> **Changes:** v4 2026-11-24 Push: content-free Web Push when an agent answers, `push_key` and `push` in status.json, `--no-push`. v3 2026-11-24 status.json for the board ("What the board shows"); `@claude start`; nudge, then flag; burst guard; resume an ended session; idle stop on done cards; pictures in a follow-up; flags `--status`, `--burst`, `--idle-stop`. v2 2026-11-23 a comment goes to the live session already on the card; `@claude new`; stop only detaches an adopted session. v1 initial.
 > **This file:** /home/claude/dev/kanzo/agent/dispatch/README.md (repo dwertz-at-blenko/kanzo, branch public-url)
 > **Session:** b1475961-06d7-40b0-9eff-f2b47896b6bb · vps as claude · cwd /home/claude/dev

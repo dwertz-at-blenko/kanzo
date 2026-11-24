@@ -399,7 +399,7 @@ function renderNav() {
             ...(folded ? [] : sec.projects.map(item))];
   });
   $("#nav-sections").replaceChildren(...sections.flat(),
-    find && !shown.length ? el("p", { class: "nav-none" }, "No project matches.") : null);
+    ...(find && !shown.length ? [el("p", { class: "nav-none" }, "No project matches.")] : []));
   document.title = waiting ? `(${waiting}) Kanzo` : "Kanzo";
 }
 
@@ -1621,6 +1621,9 @@ function showTheme(theme) {
   $("#theme-version").textContent = (version ? `${name} v${version}` : name) + kanzo + preview;
   $("#theme-tabs").querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.themePick === theme)));
   $("#settings-theme").value = theme;
+  // The phone's status bar in the installed app follows the look.
+  const bg = getComputedStyle(document.documentElement).getPropertyValue("--bg").trim();
+  if (bg) $('meta[name="theme-color"]')?.setAttribute("content", bg);
 }
 
 // The board's saved theme, applied unless this visit is previewing another with /?theme=.
@@ -1664,6 +1667,110 @@ $("#stars-help").addEventListener("click", () => {
 });
 setStars();
 
+// Notifications when an agent answers: sw.js plus one push subscription per browser. The push
+// carries nothing; the worker reads the inbox itself. kanzo-dispatch holds the key and sends.
+const push = { key: "", sub: null, busy: false,
+               supported: window.isSecureContext && "serviceWorker" in navigator && "PushManager" in window && "Notification" in window };
+const pushRegistered = window.isSecureContext && "serviceWorker" in navigator
+  ? navigator.serviceWorker.register("/sw.js").catch(() => null) : Promise.resolve(null);
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.addEventListener("message", (e) => {
+    if (e.data && e.data.kanzo === "open") { try { location.hash = new URL(e.data.url).hash; } catch {} }
+  });
+}
+
+function keyBytes(b64url) {
+  const s = b64url.replace(/-/g, "+").replace(/_/g, "/");
+  return Uint8Array.from(atob(s + "=".repeat((4 - s.length % 4) % 4)), (c) => c.charCodeAt(0));
+}
+
+// A subscription made with an older server key no longer works.
+function sameKey(sub) {
+  const k = sub.options && sub.options.applicationServerKey;
+  if (!k) return true;
+  const a = new Uint8Array(k), b = keyBytes(push.key);
+  return a.length === b.length && a.every((x, i) => x === b[i]);
+}
+
+function deviceLabel() {
+  const ua = navigator.userAgent;
+  const os = /Android/.test(ua) ? "Android" : /iPhone|iPad/.test(ua) ? "iOS" : /Mac/.test(ua) ? "Mac"
+    : /Windows/.test(ua) ? "Windows" : /Linux/.test(ua) ? "Linux" : "";
+  const app = /Edg\//.test(ua) ? "Edge" : /Firefox\//.test(ua) ? "Firefox" : /Chrome\//.test(ua) ? "Chrome"
+    : /Safari\//.test(ua) ? "Safari" : "browser";
+  return `${app}${os ? " on " + os : ""}`;
+}
+
+async function loadPush() {
+  if (push.supported) {
+    try { push.key = (await api("GET", "/push")).key || ""; } catch { push.key = ""; }
+    try {
+      const reg = await pushRegistered;
+      push.sub = reg ? await reg.pushManager.getSubscription() : null;
+      if (push.sub && push.key && !sameKey(push.sub)) push.sub = null;
+    } catch { push.sub = null; }
+  }
+  paintPush();
+}
+
+function pushOn() {
+  return !!push.sub && Notification.permission === "granted";
+}
+
+function paintPush() {
+  const usable = push.supported && !!push.key;
+  const denied = usable && Notification.permission === "denied";
+  $("#push-state").textContent = !push.supported ? "Not supported in this browser" : !push.key ? "Not set up on the server"
+    : denied ? "Blocked in this browser's site settings" : pushOn() ? "On for this device" : "Off";
+  const box = $("#settings-push");
+  box.closest(".switch").hidden = !usable;
+  box.checked = pushOn();
+  box.disabled = push.busy || denied;
+  $("#push-setting").classList.toggle("disabled", denied);
+  if (state.view === "inbox") renderInbox();
+}
+
+async function setPush(on) {
+  if (push.busy || !push.supported || !push.key) return;
+  push.busy = true;
+  paintPush();
+  try {
+    if (!(await pushRegistered)) throw new Error("Notifications could not start in this browser");
+    const reg = await navigator.serviceWorker.ready;
+    if (on) {
+      if (await Notification.requestPermission() !== "granted") throw new Error("Notifications are blocked for this site");
+      let sub = await reg.pushManager.getSubscription();
+      if (sub && !sameKey(sub)) { await sub.unsubscribe(); sub = null; }
+      if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(push.key) });
+      await api("POST", "/push/subscribe", Object.assign(sub.toJSON(), { label: deviceLabel() }));
+      push.sub = sub;
+    } else {
+      const sub = await reg.pushManager.getSubscription();
+      if (sub) {
+        await api("POST", "/push/unsubscribe", { endpoint: sub.endpoint }).catch(() => {});
+        await sub.unsubscribe();
+      }
+      push.sub = null;
+    }
+  } catch (err) { toast(err.message); }
+  push.busy = false;
+  paintPush();
+}
+
+$("#settings-push").addEventListener("change", (e) => setPush(e.target.checked));
+
+// On a phone, the Inbox offers it once, until it is answered or dismissed.
+function pushHint() {
+  if (!push.supported || !push.key || Notification.permission !== "default") return null;
+  if (!matchMedia("(pointer: coarse)").matches || localStorageGet("kanzo.pushHint") === "0") return null;
+  return el("div", { class: "push-hint", role: "note" },
+    el("span", { class: "text" }, "Get a notification when an agent answers"),
+    el("span", { class: "switch" }, el("input", { type: "checkbox", "aria-label": "Notify me when an agent answers",
+                                                  checked: push.busy, onchange: (e) => setPush(e.target.checked) }), el("span")),
+    el("button", { class: "ghost", type: "button", title: "Dismiss", "aria-label": "Dismiss",
+                   onclick: () => { localStorageSet("kanzo.pushHint", "0"); renderInbox(); } }, icon("close")));
+}
+
 function toggleSettingsMenu() {
   if (!state.board || !toggleMenu("settings")) return;
   const button = $("#settings");
@@ -1691,6 +1798,7 @@ function openSettings(section = "board") {
   $("#sync-create").hidden = !!syncRemote;
   $("#sync-error").hidden = true;
   $("#settings-version").textContent = state.board ? `Kanzo ${state.board.version}` : "";
+  loadPush();
   showSection(section);
   $("#settings-dialog").hidden = false;
   if (section === "sync") $("#sync-url").focus();
@@ -1964,7 +2072,7 @@ function renderInbox() {
       icon("human"), `${plural(inbox.flagged_count, "other card")} flagged for you`) : null,
     inbox.finished.length ? viewGroup("Finished by agents, last 3 days", inbox.finished.map((t) => inboxRow(t, false)), { "data-group": "finished" }) : null,
   ].filter(Boolean);
-  $("#view").replaceChildren(...(parts.length ? parts : [el("p", { class: "view-empty" }, "Nothing waits on you.")]));
+  $("#view").replaceChildren(pushHint() || "", ...(parts.length ? parts : [el("p", { class: "view-empty" }, "Nothing waits on you.")]));
 }
 
 async function finishTask(t) {
@@ -2144,6 +2252,7 @@ setInterval(() => {
   state.project = start.startsWith("@") ? "all" : start;
   loadBoard().then(() => { if (task) openTask(task); });
   loadAgents(false);
+  loadPush();
   // With nothing picked yet, the board opens on the Inbox when something waits there.
   openInboxFirst = !slug && !saved;
 }
