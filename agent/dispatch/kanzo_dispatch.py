@@ -1338,6 +1338,10 @@ class Dispatcher:
                 owner[t] = c["session_id"]
         for t, sid in sorted(owner.items(), key=lambda x: int(x[0])):
             sessions[sid]["cards"].append(int(t))
+        current = {}                                     # a session works on one card: its latest write
+        for t, sid in owner.items():
+            if t in best and best[t][1] == sid and best[t][0] >= best.get(current.get(sid), (0,))[0]:
+                current[sid] = t
         queued = {q["task"] for q in st["queue"]}
         recs = st.setdefault("receipts", {})
         stale = [t for t, r in recs.items()
@@ -1358,6 +1362,8 @@ class Dispatcher:
                 state = sticky
             elif sid:
                 state = sessions[sid]["state"]
+                if state == "working" and t not in st["cards"] and current.get(sid) != t:
+                    state = "idle"                       # it owns this card too, but is busy on another
             else:
                 state = sticky or "ended"
             seen = self.since.get(t)
