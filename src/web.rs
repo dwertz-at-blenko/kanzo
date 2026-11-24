@@ -40,8 +40,8 @@ const SKELETAL_CSS: &str = include_str!("skeletal.css");
 const ANTONIO: &[u8] = include_bytes!("fonts/antonio.woff2");
 /// Each theme's version, also on the first line of its stylesheet and in its
 /// `--theme-version` (a test checks they agree). Bump it with every visible change.
-const LCARS_VERSION: &str = "0.2";
-const SKELETAL_VERSION: &str = "0.1";
+const LCARS_VERSION: &str = "0.3";
+const SKELETAL_VERSION: &str = "0.2";
 
 /// Scripts only from this server, so even a bug in the Markdown renderer cannot run injected script.
 /// Turns on `/mcp-remote` when set: MCP for agents outside this machine (a claude.ai connector
@@ -183,6 +183,8 @@ fn router(home: Home, guard: Arc<Guard>, shutdown: CancellationToken, remote: Op
     let shared = shared
         .route("/images/{file}", get(image_file))
         .route("/api/changes", get(changes))
+        .route("/api/agents", get(agents))
+        .route("/api/inbox", get(inbox))
         .route("/api/board", get(board))
         .route("/api/search", get(search))
         .route("/api/activity", get(activity))
@@ -516,11 +518,93 @@ fn change_token(home: &Home, s: &Store) -> store::Result<String> {
 struct Changes {
     changes: String,
     guests: Option<usize>,
+    /// Moves when kanzo-dispatch's file changes or its watcher stops or starts; see `agents_token`.
+    agents: String,
 }
 
-async fn changes(State(home): Shared, Extension(guard): Extension<Arc<Guard>>) -> Response {
+async fn changes(State(home): Shared, Extension(guard): Extension<Arc<Guard>>, req: Request) -> Response {
     let guests = guard.lan().then(|| guard.guests().len());
-    with_store(home, move |h, s| Ok(Changes { changes: change_token(h, s)?, guests })).await
+    let guest = guest(&req).is_some();
+    with_store(home, move |h, s| {
+        Ok(Changes { changes: change_token(h, s)?, guests, agents: agents_token(h, s, guest) })
+    })
+    .await
+}
+
+/// kanzo-dispatch rewrites this file, inside the board's folder, every few seconds.
+const AGENTS_FILE: &str = "dispatch/status.json";
+/// How old the file may be before the page says the watcher is not running.
+const AGENTS_ALIVE: i64 = 30;
+
+/// The watcher's file as a JSON object, and its age in seconds by its `updated` time or,
+/// without one, by the file's mtime. `None` for a missing, empty or unreadable file.
+fn read_agents(home: &Home, s: &Store) -> Option<(serde_json::Map<String, serde_json::Value>, i64)> {
+    let path = home.dir.join(AGENTS_FILE);
+    let serde_json::Value::Object(status) = serde_json::from_slice(&std::fs::read(&path).ok()?).ok()? else {
+        return None;
+    };
+    let updated = status.get("updated").and_then(|u| u.as_str()).unwrap_or("");
+    let age = match s.seconds_since(updated).ok().flatten() {
+        Some(age) => age,
+        None => {
+            let modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok()?;
+            modified.elapsed().map_or(0, |d| d.as_secs() as i64)
+        }
+    };
+    Some((status, age.max(0)))
+}
+
+/// `<rev>-<alive>`, so the page fetches `/api/agents` only when that changes; "none" without
+/// a file, and always for a guest, who never sees the agents.
+fn agents_token(home: &Home, s: &Store, guest: bool) -> String {
+    match read_agents(home, s).filter(|_| !guest) {
+        Some((status, age)) => {
+            format!("{}-{}", status.get("rev").and_then(|r| r.as_i64()).unwrap_or(0), age <= AGENTS_ALIVE)
+        }
+        None => "none".into(),
+    }
+}
+
+/// The watcher's file plus `alive`, `age`, and `tasks`: the project, title and status of every
+/// card it names, so the page can link cards of projects it has not loaded.
+fn agents_reply(home: &Home, s: &Store, guest: bool) -> serde_json::Value {
+    let Some((mut status, age)) = read_agents(home, s).filter(|_| !guest) else {
+        return json!({ "alive": false, "sessions": [], "cards": {}, "queue": [] });
+    };
+    // A list or map of the wrong type would break the page; it reads as empty instead.
+    for (key, list) in [("sessions", true), ("cards", false), ("queue", true)] {
+        if !status.get(key).is_some_and(|v| if list { v.is_array() } else { v.is_object() }) {
+            status.insert(key.into(), if list { json!([]) } else { json!({}) });
+        }
+    }
+    let ids = |v: &serde_json::Value, key: &str| -> Vec<i64> {
+        v.as_array().into_iter().flatten().filter_map(|x| x.get(key).and_then(|i| i.as_i64())).collect()
+    };
+    let mut wanted: Vec<i64> =
+        status["cards"].as_object().into_iter().flatten().filter_map(|(k, _)| k.parse().ok()).collect();
+    wanted.extend(ids(&status["queue"], "task"));
+    for session in status["sessions"].as_array().into_iter().flatten() {
+        wanted.extend(session.get("cards").and_then(|c| c.as_array()).into_iter().flatten().filter_map(|i| i.as_i64()));
+    }
+    let tasks: serde_json::Map<String, serde_json::Value> = s
+        .tasks_by_ids(&wanted)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|t| (t.id.to_string(), json!({ "project": t.project, "title": t.title, "status": t.status })))
+        .collect();
+    status.insert("alive".into(), json!(age <= AGENTS_ALIVE));
+    status.insert("age".into(), json!(age));
+    status.insert("tasks".into(), serde_json::Value::Object(tasks));
+    serde_json::Value::Object(status)
+}
+
+async fn agents(State(home): Shared, req: Request) -> Response {
+    let guest = guest(&req).is_some();
+    with_store(home, move |h, s| Ok(agents_reply(h, s, guest))).await
+}
+
+async fn inbox(State(home): Shared) -> Response {
+    with_store(home, |_, s| s.inbox()).await
 }
 
 /// The done column only grows, and every change reloads the board.
@@ -542,6 +626,8 @@ struct Board {
     projects: Vec<store::Project>,
     statuses: Vec<String>,
     tasks: Vec<store::Task>,
+    /// Project slugs starred in the sidebar, in the order they were starred.
+    starred: Vec<String>,
     /// The look every browser shows, picked in Settings or the sidebar switcher.
     theme: &'static str,
     version: &'static str,
@@ -566,6 +652,7 @@ async fn board(State(home): Shared, Query(q): Query<BoardQuery>) -> Response {
             projects: s.list_projects()?,
             statuses: s.statuses().to_vec(),
             tasks,
+            starred: s.starred()?,
             theme: current_theme(h, s)?.name(),
             version: update::CURRENT,
         })
@@ -669,10 +756,12 @@ async fn create_task(State(home): Shared, Json(t): Json<NewTask>) -> Response {
 
 #[derive(Deserialize)]
 #[serde(untagged)]
+// Untagged: a body takes the first variant whose fields it has, so `Star` stays last.
 enum Settings {
     Backlog { backlog: bool },
     Property { property: String, visible: bool },
     Theme { theme: String },
+    Star { project: String, starred: bool },
 }
 
 async fn update_settings(State(home): Shared, Json(r): Json<Settings>) -> Response {
@@ -683,6 +772,7 @@ async fn update_settings(State(home): Shared, Json(r): Json<Settings>) -> Respon
             Some(t) => s.set_theme(t.name()),
             None => Err(Error::Invalid(format!("theme {theme:?} should be one of {}", Theme::NAMES.join(", ")))),
         },
+        Settings::Star { project, starred } => s.set_starred(&project, starred),
     })
     .await
 }
@@ -1173,6 +1263,130 @@ mod tests {
             assert_eq!(store.list_comments(2).unwrap()[0].author, "claude");
             let (_, reply) = local("tools/call", tool("delete_task", json!({ "id": "api#1" }))).await;
             assert!(reply.contains("Deleted api#1"), "{reply}");
+        });
+    }
+
+    /// One plain HTTP request to a test board; the status code and the body.
+    async fn http(port: u16, method: &str, path: &str, body: &str) -> (u16, String) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut conn = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let head = format!(
+            "{method} {path} HTTP/1.0\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        conn.write_all(format!("{head}{body}").as_bytes()).await.unwrap();
+        let mut reply = String::new();
+        conn.read_to_string(&mut reply).await.unwrap();
+        let (head, body) = reply.split_once("\r\n\r\n").unwrap();
+        (head.split(' ').nth(1).and_then(|c| c.parse().ok()).unwrap_or(0), body.to_string())
+    }
+
+    fn write_agents(home: &Home, body: &str) {
+        std::fs::create_dir_all(home.dir.join("dispatch")).unwrap();
+        std::fs::write(home.dir.join(AGENTS_FILE), body).unwrap();
+    }
+
+    /// The page only ever gets the empty reply for a file it cannot use, never an error.
+    #[test]
+    fn agents_without_a_usable_file_are_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::open(dir.path().to_path_buf()).unwrap();
+        let s = home.store().unwrap();
+        let empty = json!({ "alive": false, "sessions": [], "cards": {}, "queue": [] });
+        assert_eq!((agents_reply(&home, &s, false), agents_token(&home, &s, false)), (empty.clone(), "none".into()));
+        for bad in ["", "{\"rev\": 3, \"sessi", "[1, 2]", "null", "\u{0}\u{1}"] {
+            write_agents(&home, bad);
+            assert_eq!(agents_reply(&home, &s, false), empty, "{bad:?}");
+            assert_eq!(agents_token(&home, &s, false), "none", "{bad:?}");
+        }
+        // Wrong types inside a good file read as empty too.
+        write_agents(&home, r#"{"rev": 2, "sessions": "x", "cards": [], "queue": {}}"#);
+        let v = agents_reply(&home, &s, false);
+        assert_eq!((&v["sessions"], &v["cards"], &v["queue"]), (&json!([]), &json!({}), &json!([])));
+    }
+
+    #[test]
+    fn agents_pass_the_file_on_with_its_age_and_the_cards_it_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::open(dir.path().to_path_buf()).unwrap();
+        let s = home.store().unwrap();
+        let api = s.create_project("api", "", None).unwrap();
+        let ship = s.create_task(api.id, "Ship it", "").unwrap();
+        let docs = s.create_task(api.id, "Write docs", "").unwrap();
+        let file = json!({
+            "version": 1, "rev": 7,
+            "sessions": [{ "id": "a1b2c3d4", "name": "api-1", "state": "working", "cards": [ship.id] }],
+            "cards": { ship.id.to_string(): { "state": "working", "comments": {} } },
+            "queue": [{ "task": docs.id, "comment": 4 }, { "task": 999, "comment": 5 }],
+        });
+        // No `updated`: the file's mtime, just now, says the watcher is running.
+        write_agents(&home, &file.to_string());
+        let v = agents_reply(&home, &s, false);
+        assert_eq!((&v["alive"], v["age"].as_i64().unwrap() <= 2), (&json!(true), true));
+        assert_eq!((&v["rev"], &v["sessions"][0]["name"]), (&json!(7), &json!("api-1")));
+        assert_eq!(
+            v["tasks"],
+            json!({
+                ship.id.to_string(): { "project": "api", "title": "Ship it", "status": "todo" },
+                docs.id.to_string(): { "project": "api", "title": "Write docs", "status": "todo" },
+            }),
+            "a card that is gone has no entry"
+        );
+        assert_eq!(agents_token(&home, &s, false), "7-true");
+
+        let mut stale = file.clone();
+        stale["updated"] = json!("2020-01-01T00:00:00Z");
+        stale["rev"] = json!(8);
+        write_agents(&home, &stale.to_string());
+        let v = agents_reply(&home, &s, false);
+        assert_eq!((&v["alive"], v["age"].as_i64().unwrap() > 86_400), (&json!(false), true));
+        assert_eq!(agents_token(&home, &s, false), "8-false");
+    }
+
+    /// A computer that joined the board over the LAN sees the board, not the agents.
+    #[test]
+    fn a_guest_never_sees_the_agents() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::open(dir.path().to_path_buf()).unwrap();
+        let s = home.store().unwrap();
+        write_agents(&home, r#"{"rev": 1, "sessions": [{"id": "x", "name": "secret"}], "cards": {}, "queue": []}"#);
+        assert_eq!(agents_reply(&home, &s, true), json!({ "alive": false, "sessions": [], "cards": {}, "queue": [] }));
+        assert_eq!(agents_token(&home, &s, true), "none");
+        assert_eq!(agents_token(&home, &s, false), "1-true");
+    }
+
+    #[test]
+    fn the_routes_serve_agents_inbox_and_stars() {
+        block_on(async {
+            let (_dir, home, port) = board(None).await;
+            let (code, body) = http(port, "GET", "/api/changes", "").await;
+            let v: Value = serde_json::from_str(&body).unwrap();
+            assert_eq!((code, &v["agents"]), (200, &json!("none")));
+            assert!(v["changes"].is_string(), "the old fields stay: {body}");
+            let (code, body) = http(port, "GET", "/api/agents", "").await;
+            assert_eq!((code, serde_json::from_str::<Value>(&body).unwrap()["alive"].clone()), (200, json!(false)));
+            write_agents(&home, r#"{"rev": 4, "sessions": [], "cards": {}, "queue": []}"#);
+            let (_, body) = http(port, "GET", "/api/changes", "").await;
+            assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["agents"], json!("4-true"));
+
+            let (code, body) = http(port, "GET", "/api/inbox", "").await;
+            assert_eq!(
+                (code, serde_json::from_str::<Value>(&body).unwrap()),
+                (200, json!({ "waiting": [], "review": [], "flagged_count": 0, "finished": [] }))
+            );
+
+            let (code, _) = http(port, "PATCH", "/api/settings", r#"{"project": "api", "starred": true}"#).await;
+            assert_eq!(code, 200);
+            let (code, _) = http(port, "PATCH", "/api/settings", r#"{"project": "nope", "starred": true}"#).await;
+            assert_eq!(code, 404);
+            let (_, body) = http(port, "GET", "/api/board", "").await;
+            let v: Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(v["starred"], json!(["api"]));
+            let p = &v["projects"][0];
+            assert_eq!(
+                (&p["review"], &p["waiting"], p["changed_at"].as_str().unwrap().len()),
+                (&json!(0), &json!(0), 20)
+            );
         });
     }
 }

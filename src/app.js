@@ -29,6 +29,12 @@ const state = {
   menu: null,
   net: null,
   guests: null,
+  // "inbox" or "agents" when a view shows in place of the columns; the hash is then #@inbox.
+  view: null,
+  agents: { alive: false, sessions: [], cards: {}, queue: [], tasks: {} },
+  agentsToken: null,
+  inbox: null,
+  inboxChanges: null,
 };
 
 async function api(method, path, body) {
@@ -93,6 +99,9 @@ const ICONS = {
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/>',
   activity: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   comment: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+  inbox: '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
+  agent: '<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2M20 14h2M15 13v2M9 13v2"/>',
+  star: '<path d="m12 2 3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01z"/>',
   share: '<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"/>',
 };
 
@@ -295,7 +304,9 @@ async function loadBoard() {
     if (board.theme) followTheme(board.theme);
     state.changes = board.changes;
     $("#offline").hidden = true;
+    if (!state.view && state.project !== "all") markSeen(state.project);
     render();
+    if (board.changes !== state.inboxChanges) { state.inboxChanges = board.changes; loadInbox(); }
   } catch (e) {
     if (request !== boardRequest) return;
     if (state.project !== "all" && /no project/.test(e.message)) {
@@ -306,8 +317,13 @@ async function loadBoard() {
   }
 }
 
+// Where the board is: a project slug, "all", or a view as "@inbox". A slug never starts with "@".
+function here() {
+  return state.view ? "@" + state.view : state.project;
+}
+
 function updateHash() {
-  const hash = "#" + state.project + (state.task ? "/" + state.task : "");
+  const hash = "#" + here() + (state.task ? "/" + state.task : "");
   if (location.hash !== hash) history.replaceState(null, "", hash);
 }
 
@@ -319,8 +335,9 @@ function readHash() {
 }
 
 function setProject(slug) {
-  state.project = slug;
-  localStorageSet("kanzo.project", slug);
+  state.view = VIEWS.find((v) => slug === "@" + v) || null;
+  if (!state.view) state.project = slug.startsWith("@") ? "all" : slug;
+  localStorageSet("kanzo.project", here());
   updateHash();
   state.layout = "";
   loadBoard();
@@ -329,7 +346,10 @@ function setProject(slug) {
 function render() {
   renderNav();
   renderHeader();
-  renderColumns();
+  $("#columns").hidden = !!state.view;
+  $("#view").hidden = !state.view;
+  if (state.view) renderView();
+  else renderColumns();
 }
 
 function renderNav() {
@@ -337,25 +357,113 @@ function renderNav() {
   if (renaming && document.contains(renaming.input)) return;
   const { projects } = state.board;
   const open = projects.reduce((n, p) => n + p.open, 0);
-  const link = (slug, name, count, glyph) =>
-    el("a", { href: "#" + slug, class: state.project === slug ? "active" : null,
-              "data-agent": "project", "data-project-id": slug,
+  const at = here();
+  const starred = new Set(state.board.starred || []);
+  const working = workingProjects();
+  const seen = seenMap();
+  const link = (slug, name, count, glyph, marks = [], agent = "project") =>
+    el("a", { href: "#" + slug, class: at === slug ? "active" : null,
+              "data-agent": agent, "data-project-id": slug,
               onclick: (e) => { e.preventDefault(); setProject(slug); } },
       glyph,
       el("span", { class: "name" }, name),
-      el("span", { class: "count" }, String(count)));
+      ...marks,
+      el("span", { class: "count" }, count === null ? "" : String(count)));
   const item = (p) => renaming && renaming.slug === p.slug
     ? el("div", { class: "item renaming" }, icon("folder", projectColor(p.slug)), renaming.input)
     : el("div", { class: "item" + (state.menu === p.slug ? " menu-open" : ""), "data-agent": "project", "data-project-id": p.slug },
-    link(p.slug, p.name, p.open, icon("folder", projectColor(p.slug))),
+    link(p.slug, p.name, p.open, icon("folder", projectColor(p.slug)), [
+      at !== p.slug && isFresh(p, seen) ? el("span", { class: "fresh", title: "Changed since you last opened it" }) : null,
+      working.has(p.slug) ? el("span", { class: "agent-dot", title: "An agent is working here" }) : null,
+      p.review ? el("span", { class: "pill", title: `${plural(p.review, "card")} in review` }, String(p.review)) : null,
+    ]),
+    starButton(p, starred.has(p.slug)),
     el("button", { class: "more", title: "More", "aria-label": `More for ${p.name}`, "aria-haspopup": "menu",
                    onclick: (e) => toggleProjectMenu(p, e.currentTarget) }, icon("more")));
-  $("#nav").replaceChildren(
+  const waiting = state.inbox ? state.inbox.waiting.length : 0;
+  const busy = state.agents.sessions.filter((s) => s.state === "working").length;
+  $("#nav-views").replaceChildren(
+    link("@inbox", "Inbox", waiting || null, icon("inbox"), [], "view"),
+    link("@agents", "Agents", busy || null, icon("agent"), [], "view"),
     link("all", "All projects", open, icon("board")),
-    ...(projects.length ? [el("div", { class: "label" }, "Projects")] : []),
-    ...projects.map(item),
   );
+  const find = $("#nav-find").value.trim().toLowerCase();
+  const shown = find ? projects.filter((p) => p.name.toLowerCase().includes(find) || p.slug.includes(find)) : projects;
+  const sections = navSections(shown, starred).filter((sec) => sec.projects.length).map((sec) => {
+    // Finding looks in folded sections too.
+    const folded = !find && isFolded(sec);
+    return [el("button", { class: "sec", type: "button", "aria-expanded": String(!folded), "data-section": sec.id,
+                           onclick: () => { localStorageSet(`kanzo.fold.${sec.id}`, folded ? "0" : "1"); renderNav(); } },
+              el("span", { class: "caret", "aria-hidden": "true" }), el("span", { class: "name" }, sec.name),
+              el("span", { class: "count" }, String(sec.projects.length))),
+            ...(folded ? [] : sec.projects.map(item))];
+  });
+  $("#nav-sections").replaceChildren(...sections.flat(),
+    find && !shown.length ? el("p", { class: "nav-none" }, "No project matches.") : null);
+  document.title = waiting ? `(${waiting}) Kanzo` : "Kanzo";
 }
+
+const VIEWS = ["inbox", "agents"];
+const DAY = 864e5;
+// In sidebar order; a project shows once, in the first section it fits.
+const SECTIONS = [
+  { id: "starred", name: "Starred", folded: false, fits: (p, starred) => starred.has(p.slug) },
+  { id: "review", name: "Needs you", folded: false, fits: (p) => p.review > 0, order: (a, b) => b.review - a.review },
+  { id: "active", name: "Active", folded: false, fits: (p) => !!p.changed_at && Date.now() - parseTime(p.changed_at) < 7 * DAY,
+    order: (a, b) => b.changed_at.localeCompare(a.changed_at) },
+  { id: "parked", name: "Parked", folded: true, fits: (p) => p.open > 0 },
+  { id: "empty", name: "Empty", folded: true, fits: () => true },
+];
+
+function navSections(projects, starred) {
+  let left = projects;
+  return SECTIONS.map((sec) => {
+    const mine = left.filter((p) => sec.fits(p, starred));
+    left = left.filter((p) => !mine.includes(p));
+    return { ...sec, projects: sec.order ? mine.sort(sec.order) : mine };
+  });
+}
+
+function isFolded(sec) {
+  const saved = localStorageGet(`kanzo.fold.${sec.id}`);
+  return saved === null ? sec.folded : saved === "1";
+}
+
+// When this browser last opened each project, for the blue dot. A project never opened here
+// counts from the first time this browser ran this version, so nothing starts out new.
+function seenMap() {
+  try { return JSON.parse(localStorageGet("kanzo.seen")) || {}; } catch { return {}; }
+}
+
+function markSeen(slug) {
+  const seen = seenMap();
+  seen[slug] = new Date().toISOString();
+  localStorageSet("kanzo.seen", JSON.stringify(seen));
+}
+
+if (!localStorageGet("kanzo.seenSince")) localStorageSet("kanzo.seenSince", new Date().toISOString());
+
+function isFresh(p, seen) {
+  const since = seen[p.slug] || localStorageGet("kanzo.seenSince");
+  return !!p.changed_at && !!since && parseTime(p.changed_at) > new Date(since);
+}
+
+function starButton(p, on) {
+  return el("button", { class: "star" + (on ? " on" : ""), title: on ? "Unstar" : "Star", "aria-pressed": String(on),
+                        "aria-label": `${on ? "Unstar" : "Star"} ${p.name}`, onclick: () => setStar(p.slug, !on) }, icon("star"));
+}
+
+async function setStar(slug, starred) {
+  try {
+    await api("PATCH", "/settings", { project: slug, starred });
+    await loadBoard();
+  } catch (err) { toast(err.message); }
+}
+
+$("#nav-find").addEventListener("input", () => renderNav());
+$("#nav-find").addEventListener("keydown", (e) => {
+  if (e.key === "Escape") { e.stopPropagation(); e.target.value = ""; renderNav(); }
+});
 
 // `state.menu` holds the slug, so the row keeps its highlight while polling redraws the sidebar.
 function toggleProjectMenu(p, button) {
@@ -385,12 +493,14 @@ function toggleProjectMenu(p, button) {
     if (focus) input.focus();
   };
   drawRepos(p.repos);
+  const starred = (state.board.starred || []).includes(p.slug);
+  const star = el("button", { onclick: () => { closeMenu(); setStar(p.slug, !starred); } }, icon("star"), starred ? "Unstar" : "Star");
   const rename = el("button", { onclick: () => startRename(p) }, icon("rename"), "Rename");
   const remove = el("button", { class: "danger", onclick: () => { closeMenu(); deleteProject(p); } },
     icon("trash"), "Delete project");
   const menu = el("div", { class: "menu", role: "menu", tabindex: "-1" },
     el("div", { class: "label" }, "Color"), swatches, el("div", { class: "label" }, "Repos"), repos,
-    el("div", { class: "sep" }), rename, remove);
+    el("div", { class: "sep" }), star, rename, remove);
   document.body.append(menu);
   const r = button.getBoundingClientRect();
   const below = r.bottom + 4 + menu.offsetHeight <= innerHeight;
@@ -466,11 +576,13 @@ document.addEventListener("mousedown", (e) => {
   if (!e.target.closest(".menu, .nav .more, #settings, #network, #network-menu")) closeMenu();
 });
 document.addEventListener("mousedown", (e) => {
-  if (state.task && e.button === 0 && !e.target.closest("#panel, .card, .menu, .search-dialog")) closeTask();
+  if (state.task && e.button === 0 && !e.target.closest("#panel, .card, .view-row, .card-link, .menu, .search-dialog")) closeTask();
 });
 window.addEventListener("resize", closeMenu);
 window.addEventListener("blur", closeMenu);
 $("#nav").addEventListener("scroll", closeMenu);
+// On a phone the sections scroll sideways instead.
+$("#nav-sections").addEventListener("scroll", closeMenu);
 
 function currentProject() {
   return state.board.projects.find((p) => p.slug === state.project) || null;
@@ -488,6 +600,12 @@ function renderHeader() {
       el("button", { type: "button", title: `Remove "${f}"`, "aria-label": `Remove the filter ${f}`,
                      onclick: () => setFilters(savedFilters().filter((_, j) => j !== i)) }, icon("close")))));
   $("#human-only").setAttribute("aria-pressed", String(isHumanOnly()));
+  if (state.view) {
+    $("#new-task").hidden = $("#human-only").hidden = $("#filter-box").hidden = true;
+    $("#filters").replaceChildren();
+    header.replaceChildren(el("h1", {}, state.view === "inbox" ? "Inbox" : "Agents"), el("span", { class: "sub" }, viewSub()));
+    return;
+  }
   if (!projects.length) { header.replaceChildren(); return; }
   const open = (n) => plural(n, "open task");
   if (!p) {
@@ -745,7 +863,7 @@ function card(t, showProject) {
                            "data-agent": "task-card", "data-task-id": t.id, "data-status": t.status, "data-project": t.project,
                            "data-tags": t.tags.join(" "), "data-human": t.human ? "true" : null, "data-alert": alertLevel(t),
                            "data-updated": t.updated_at.slice(0, 10), "data-comments": t.comments || null,
-                           onclick: () => openTask(t.id) },
+                           "data-agent-state": tileState(t.id), onclick: () => openTask(t.id) },
     el("div", { class: "head" },
       el("div", { class: "title" }, t.title),
       t.human ? el("span", { class: "human-mark", title: "Human task: agents skip it" }, icon("human")) : null,
@@ -873,6 +991,7 @@ let panelTask = null;
 async function openTask(id) {
   leavePanelField();
   if (fresh !== id) dropFresh();
+  if (state.task !== id) stripConfirm = null;
   state.task = id;
   document.querySelectorAll(".card.open").forEach((c) => c.classList.remove("open"));
   document.querySelector(`.card[data-id="${id}"]`)?.classList.add("open");
@@ -940,17 +1059,31 @@ async function refreshTask() {
     thumb(i.file, async () => {
       try { await api("DELETE", `/images/${i.id}`); refreshTask(); } catch (err) { toast(err.message); }
     })));
-  $("#p-comments").replaceChildren(...comments.map((c) => {
+  // A comment of the human's is answered once anyone but the dispatcher writes after it.
+  const answered = (i) => comments.slice(i + 1).some((c) => c.author !== ME && c.author !== DISPATCH);
+  $("#p-comments").replaceChildren(...comments.map((c, i) => {
+    const remove = el("button", { class: "remove", title: "Delete comment", "aria-label": "Delete comment",
+                                  onclick: () => deleteComment(c) }, icon("trash"));
+    const mine = c.author === ME;
+    const command = mine && COMMAND.exec(c.body.trim());
+    if (command) {
+      return el("div", { class: "comment command" }, icon("agent"), `You ${COMMAND_SAID[command[1].toLowerCase()]}`, " · ",
+        timeEl(c.created_at), el("span", { class: "delivery", "data-comment-id": c.id, hidden: true }), remove);
+    }
+    const note = mine && c.body.startsWith("[note]");
     const body = el("div", { class: "md" });
-    body.innerHTML = markdown(c.body);
+    body.innerHTML = markdown(note ? c.body.slice(6).trimStart() : c.body);
     const attached = images.filter((i) => i.comment_id === c.id);
-    return el("div", { class: "comment" },
-      el("div", { class: "who" }, el("b", {}, c.author), " · ", timeEl(c.created_at),
-        el("button", { class: "remove", title: "Delete comment", "aria-label": "Delete comment",
-                       onclick: () => deleteComment(c) }, icon("trash"))),
+    return el("div", { class: "comment" + (c.author === DISPATCH ? " dispatch" : "") },
+      el("div", { class: "who" }, el("b", {}, c.author), note ? el("span", { class: "note-tag" }, "note") : null,
+        " · ", timeEl(c.created_at), remove),
       c.body ? body : null,
-      attached.length ? el("div", { class: "thumbs" }, attached.map((i) => thumb(i.file))) : null);
+      attached.length ? el("div", { class: "thumbs" }, attached.map((i) => thumb(i.file))) : null,
+      mine ? el("div", { class: "delivery", "data-comment-id": c.id, "data-note": note ? "1" : null,
+                         "data-answered": answered(i) ? "1" : null, hidden: true }) : null);
   }));
+  renderAgentStrip();
+  paintDelivery();
 }
 
 async function deleteComment(c) {
@@ -1247,7 +1380,7 @@ document.addEventListener("keydown", (e) => {
 
 window.addEventListener("hashchange", () => {
   const { slug, task } = readHash();
-  if ((slug || "all") !== state.project) setProject(slug || "all");
+  if ((slug || "all") !== here()) setProject(slug || "all");
   if (task && task !== state.task) openTask(task);
   else if (!task && state.task) closeTask();
 });
@@ -1255,12 +1388,16 @@ window.addEventListener("hashchange", () => {
 async function poll() {
   if (document.hidden) return schedulePoll();
   try {
-    const { changes, guests = null } = await api("GET", "/changes");
+    const { changes, guests = null, agents = "none" } = await api("GET", "/changes");
     $("#offline").hidden = true;
     if (guests !== state.guests) {
       state.guests = guests;
       renderNetwork();
       if (state.menu === "network") loadNetwork();
+    }
+    if (agents !== state.agentsToken) {
+      state.agentsToken = agents;
+      loadAgents(agents === "none");
     }
     if (changes !== state.changes) {
       state.changes = changes;
@@ -1731,12 +1868,282 @@ setInterval(checkUpdate, 24 * 60 * 60 * 1000);
 loadSyncRemote();
 loadNetwork();
 
+// ---- Delegation: the agents' side of each card, from kanzo-dispatch's file through /api/agents.
+
+const ME = "me";
+const DISPATCH = "kanzo-dispatch";
+const COMMAND = /^@claude (start|stop|new)$/i;
+const COMMAND_SAID = { start: "started an agent", stop: "stopped the agent", new: "asked for a new agent" };
+const NO_AGENTS = { alive: false, sessions: [], cards: {}, queue: [], tasks: {} };
+
+// `none` is the token for no file: nothing to fetch.
+async function loadAgents(none) {
+  try {
+    state.agents = none ? NO_AGENTS : { ...NO_AGENTS, ...(await api("GET", "/agents")) };
+  } catch { return; }
+  // Only what shows agents redraws; the columns and the comment box are left alone.
+  if (state.board) { renderNav(); if (state.view) renderHeader(); }
+  paintTiles();
+  if (state.view === "agents") renderView();
+  if (panelTask) { renderAgentStrip(); paintDelivery(); }
+}
+
+function sessionOf(card) {
+  return card ? state.agents.sessions.find((s) => s.id === card.session || s.session_id === card.session) || null : null;
+}
+
+// Projects with a card an agent is working on right now.
+function workingProjects() {
+  const { cards, tasks } = state.agents;
+  return new Set(Object.keys(cards).filter((id) => cards[id].state === "working").map((id) => tasks[id]?.project));
+}
+
+let inboxRequest = 0;
+let openInboxFirst = false;
+
+async function loadInbox() {
+  const request = ++inboxRequest;
+  let inbox;
+  try { inbox = await api("GET", "/inbox"); } catch { return; }
+  if (request !== inboxRequest) return;
+  state.inbox = inbox;
+  if (openInboxFirst) {
+    openInboxFirst = false;
+    if (inbox.waiting.length && here() === "all") return setProject("@inbox");
+  }
+  if (!state.board) return;
+  renderNav();
+  if (state.view) { renderHeader(); renderView(); }
+}
+
+function renderView() {
+  if (state.view === "inbox") renderInbox();
+  else renderAgents();
+}
+
+function viewSub() {
+  if (state.view === "inbox") {
+    const n = state.inbox ? state.inbox.waiting.length : 0;
+    return n ? `${plural(n, "card")} wait on you` : "";
+  }
+  const { sessions } = state.agents;
+  return sessions.length ? `${sessions.filter((s) => s.state === "working").length} working, ${plural(sessions.length, "session")}` : "";
+}
+
+function projectName(slug) {
+  return state.board?.projects.find((p) => p.slug === slug)?.name || slug;
+}
+
+function inboxRow(t, done) {
+  const last = t.last;
+  return el("div", { class: "view-row", role: "button", tabindex: "0", "data-task-id": t.id,
+                     onclick: () => openTask(t.id), onkeydown: (e) => { if (e.key === "Enter") openTask(t.id); } },
+    el("div", { class: "line" },
+      el("span", { class: "chip-project" }, el("span", { class: "dot", style: `background:${projectColor(t.project)}` }),
+        el("span", {}, projectName(t.project))),
+      el("span", { class: "key mono" }, key(t)),
+      el("span", { class: "title" }, t.title)),
+    last ? el("div", { class: "last" }, el("b", {}, last.author), " · ", timeEl(last.at),
+      last.excerpt ? el("span", { class: "excerpt" }, " · ", last.excerpt) : null) : null,
+    done ? el("button", { class: "btn done", type: "button", title: `Move ${key(t)} to done`,
+                          onclick: (e) => { e.stopPropagation(); finishTask(t); } }, icon("check"), "Done") : null);
+}
+
+function viewGroup(title, rows, extra = {}) {
+  return el("section", { class: "view-group", ...extra },
+    el("h2", {}, title, el("span", { class: "count" }, String(rows.length))), ...rows);
+}
+
+function renderInbox() {
+  const inbox = state.inbox;
+  if (!inbox) { $("#view").replaceChildren(); return; }
+  const parts = [
+    inbox.waiting.length ? viewGroup("Agents wait on you", inbox.waiting.map((t) => inboxRow(t, true)), { "data-group": "waiting" }) : null,
+    inbox.review.length ? viewGroup("In review", inbox.review.map((t) => inboxRow(t, true)), { "data-group": "review" }) : null,
+    inbox.flagged_count ? el("button", { class: "view-link", type: "button", onclick: showFlagged },
+      icon("human"), `${plural(inbox.flagged_count, "other card")} flagged for you`) : null,
+    inbox.finished.length ? viewGroup("Finished by agents, last 3 days", inbox.finished.map((t) => inboxRow(t, false)), { "data-group": "finished" }) : null,
+  ].filter(Boolean);
+  $("#view").replaceChildren(...(parts.length ? parts : [el("p", { class: "view-empty" }, "Nothing waits on you.")]));
+}
+
+async function finishTask(t) {
+  try {
+    await api("POST", `/tasks/${t.id}/move`, { status: "done" });
+    toast(`${key(t)} is done`);
+    loadBoard();
+  } catch (err) { toast(err.message); }
+}
+
+function showFlagged() {
+  $("#filter").value = "is:human";
+  paintQuery($("#filter"));
+  setProject("all");
+}
+
+const SESSION_ORDER = { blocked: 0, working: 1, idle: 2 };
+let otherOpen = false;
+
+function renderAgents() {
+  const { alive, sessions, queue } = state.agents;
+  const sorted = [...sessions].sort((a, b) => (SESSION_ORDER[a.state] ?? 3) - (SESSION_ORDER[b.state] ?? 3));
+  // Sessions the dispatcher only saw, with no card, are noise most of the time.
+  const other = sorted.filter((s) => s.origin === "other" && !(s.cards || []).length);
+  const mine = sorted.filter((s) => !other.includes(s));
+  $("#view").replaceChildren(
+    alive ? el("div", { class: "watcher ok" }, el("span", { class: "dot" }), "Agent watcher is running")
+          : el("div", { class: "watcher down", role: "status" }, icon("info"), "Agent watcher is not running: comments are not sent to agents."),
+    mine.length ? viewGroup("Sessions", mine.map(sessionRow)) : el("p", { class: "view-empty" }, "No agent is working."),
+    queue.length ? viewGroup("Queue", queue.map((q) => el("div", { class: "view-row queued" },
+      el("div", { class: "line" }, cardLink(q.task)), el("div", { class: "last" }, "Waiting since ", timeEl(q.at))))) : null,
+    other.length ? el("details", { class: "view-group other", open: otherOpen, ontoggle: (e) => { otherOpen = e.target.open; } },
+      el("summary", {}, "Other sessions", el("span", { class: "count" }, String(other.length))), ...other.map(sessionRow)) : null);
+}
+
+function tokens(n) {
+  if (typeof n !== "number") return null;
+  return n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n);
+}
+
+function sessionRow(s) {
+  const folder = (s.folder || "").replace(/\/+$/, "").split("/").pop();
+  const link = /^https:\/\//.test(s.link || "") ? s.link : null;
+  return el("div", { class: "view-row session", "data-state": s.state },
+    el("div", { class: "line" },
+      el("span", { class: "state", "data-state": s.state }, el("span", { class: "dot" }), s.state),
+      el("b", { class: "title" }, s.name || s.id),
+      folder ? el("span", { class: "folder mono", title: s.folder }, folder) : null,
+      tokens(s.tokens) ? el("span", { class: "tokens mono", title: `${s.tokens} tokens` }, tokens(s.tokens)) : null),
+    s.detail ? el("div", { class: "last" }, s.detail) : null,
+    (s.cards || []).length || link ? el("div", { class: "links" }, ...(s.cards || []).map(cardLink),
+      link ? el("a", { class: "open-claude", href: link, target: "_blank", rel: "noopener" }, "Open in Claude") : null) : null);
+}
+
+function cardLink(id) {
+  const t = state.agents.tasks[id];
+  return el("a", { class: "card-link", href: `#${t ? t.project : "all"}/${id}`, onclick: (e) => { e.preventDefault(); openTask(id); } },
+    t ? el("span", { class: "dot", style: `background:${projectColor(t.project)}` }) : null,
+    el("span", { class: "mono" }, t ? `${t.project}#${id}` : `#${id}`), t ? el("span", { class: "title" }, t.title) : null);
+}
+
+// The strip under the panel's header: one state at a time, from the card's line in the file.
+const STRIP = {
+  none: "No agent on this card",
+  queued: "Queued: starts when a slot frees up",
+  starting: "Starting an agent",
+  working: "Working",
+  idle: "Idle: waits for your next comment",
+  blocked: "Blocked: waits in its own terminal",
+  unreachable: "Unreachable: the session did not take your comment",
+  silent: "Silent: nothing from the agent since it picked up",
+  failed: "Failed",
+  ended: "Ended",
+};
+const STRIP_ACTIONS = {
+  none: ["start"], failed: ["start"], ended: ["start"], queued: ["stop"], starting: ["stop"],
+  working: ["stop", "new"], idle: ["stop", "new"], blocked: ["stop", "new"], unreachable: ["new", "stop"], silent: ["new", "stop"],
+};
+const STRIP_BUTTONS = { start: "Start agent", stop: "Stop", new: "New agent" };
+const STRIP_ASKS = { stop: ["Stop this agent?", "Stop it"], new: ["Start a new agent?", "Start it"] };
+// "stop" or "new" while the strip asks to confirm; never window.confirm.
+let stripConfirm = null;
+
+function renderAgentStrip() {
+  const strip = $("#p-agent");
+  if (!panelTask) return;
+  const { alive, cards } = state.agents;
+  const card = cards[panelTask.id];
+  const st = card && STRIP[card.state] ? card.state : "none";
+  const session = sessionOf(card);
+  const link = /^https:\/\//.test(session?.link || "") ? session.link : null;
+  const actions = alive ? STRIP_ACTIONS[st] : [];
+  if (!actions.includes(stripConfirm)) stripConfirm = null;
+  const detail = (st === "working" ? session?.detail : "") || card?.note || "";
+  const button = (cmd) => el("button", { class: "btn" + (cmd === "start" ? " primary" : ""), type: "button", "data-command": cmd,
+    onclick: () => { if (cmd === "start") sendCommand(cmd); else { stripConfirm = cmd; renderAgentStrip(); } } }, STRIP_BUTTONS[cmd]);
+  strip.dataset.state = alive ? st : "down";
+  strip.replaceChildren(
+    el("span", { class: "dot" }),
+    el("div", { class: "what" },
+      el("div", { class: "say" }, el("b", {}, alive ? STRIP[st] : "Agent watcher is not running"),
+        alive && card?.since && st !== "none" ? [" · ", timeEl(card.since)] : null),
+      alive ? (detail ? el("div", { class: "detail" }, detail) : null)
+            : el("div", { class: "detail" }, "New comments are not sent to an agent."),
+      session || link ? el("div", { class: "session" }, session ? el("span", { class: "mono" }, session.name || session.id) : null,
+        link ? el("a", { href: link, target: "_blank", rel: "noopener" }, "Open in Claude") : null) : null),
+    stripConfirm
+      ? el("div", { class: "actions confirm" }, el("span", {}, STRIP_ASKS[stripConfirm][0]),
+          el("button", { class: "btn primary", type: "button", "data-confirm": stripConfirm, onclick: () => sendCommand(stripConfirm) }, STRIP_ASKS[stripConfirm][1]),
+          el("button", { class: "btn", type: "button", onclick: () => { stripConfirm = null; renderAgentStrip(); } }, "Cancel"))
+      : el("div", { class: "actions" }, ...actions.map(button)));
+  strip.hidden = false;
+  $("#p-agent-warn").hidden = alive;
+}
+
+// A command is an ordinary comment that kanzo-dispatch reads.
+async function sendCommand(cmd) {
+  stripConfirm = null;
+  if (!panelTask) return;
+  try {
+    await api("POST", `/tasks/${panelTask.id}/comments`, { body: `@claude ${cmd}` });
+    await refreshTask();
+    loadBoard();
+  } catch (err) { toast(err.message); }
+}
+
+const DELIVERY = {
+  started: () => "Started an agent",
+  delivered: (d, s) => `Delivered to ${s?.name || "the agent"}`,
+  waiting: () => "Waiting: the agent gets this when it finishes its step",
+  queued: () => "Queued: starts when a slot frees up",
+  failed: (d) => "Not delivered" + (d.note ? `: ${d.note}` : ""),
+  held: (d) => "Held" + (d.note ? `: ${d.note}` : ""),
+  command: (d) => d.note || "Carried out",
+};
+
+// The line under each of the human's comments, redrawn in place when the file changes.
+function paintDelivery() {
+  if (!panelTask) return;
+  const card = state.agents.cards[panelTask.id];
+  const session = sessionOf(card);
+  document.querySelectorAll("#p-comments .delivery").forEach((line) => {
+    const d = card?.comments?.[line.dataset.commentId];
+    const stateName = line.dataset.note ? "note" : line.dataset.answered ? "answered" : d && DELIVERY[d.state] ? d.state : "";
+    line.dataset.state = stateName;
+    line.textContent = stateName === "note" ? "Not sent to an agent" : stateName === "answered" ? "Answered"
+      : stateName ? DELIVERY[stateName](d, session) : "";
+    line.hidden = !stateName;
+  });
+}
+
+const TILE = { working: "working", queued: "attached", starting: "attached", idle: "idle",
+               blocked: "warn", silent: "warn", failed: "warn", unreachable: "warn" };
+
+function tileState(id) {
+  const card = state.agents.cards[id];
+  return (card && TILE[card.state]) || null;
+}
+
+function paintTiles() {
+  document.querySelectorAll("#columns .card").forEach((n) => {
+    const s = tileState(n.dataset.id);
+    if (s) n.dataset.agentState = s;
+    else delete n.dataset.agentState;
+  });
+}
+
 setInterval(() => {
   document.querySelectorAll("time[datetime]").forEach((t) => { t.textContent = ago(t.getAttribute("datetime")); });
 }, 60000);
 
 {
   const { slug, task } = readHash();
-  state.project = slug || localStorageGet("kanzo.project") || "all";
+  const saved = localStorageGet("kanzo.project");
+  const start = slug || saved || "all";
+  state.view = VIEWS.find((v) => start === "@" + v) || null;
+  state.project = start.startsWith("@") ? "all" : start;
   loadBoard().then(() => { if (task) openTask(task); });
+  loadAgents(false);
+  // With nothing picked yet, the board opens on the Inbox when something waits there.
+  openInboxFirst = !slug && !saved;
 }

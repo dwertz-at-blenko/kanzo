@@ -3,6 +3,7 @@
 //! on every request; the rollback journal makes a read touch no extra files at all and
 //! measured about 3x faster per operation.
 
+use std::collections::HashSet;
 use std::fmt;
 use std::path::Path;
 use std::time::Duration;
@@ -94,7 +95,44 @@ pub struct Project {
     pub created_at: String,
     pub open: i64,
     pub total: i64,
+    /// Open cards in review: the sidebar's "Needs you".
+    pub review: i64,
+    /// Open cards flagged for the human.
+    pub waiting: i64,
+    /// The newest task edit or comment in the project, "" when it has none.
+    pub changed_at: String,
 }
+
+/// The latest comment on a card in the inbox, as one plain line.
+#[derive(Debug, Clone, Serialize)]
+pub struct Last {
+    pub author: String,
+    pub at: String,
+    pub excerpt: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct InboxItem {
+    #[serde(flatten)]
+    pub task: Task,
+    pub last: Option<Last>,
+}
+
+/// What waits on the human across every project: the board's Inbox view.
+#[derive(Debug, Default, Serialize)]
+pub struct Inbox {
+    /// Open cards in review or flagged, where someone else wrote last.
+    pub waiting: Vec<InboxItem>,
+    /// The other cards in review.
+    pub review: Vec<InboxItem>,
+    /// The other open flagged cards; the page links to the filter instead of listing them.
+    pub flagged_count: usize,
+    /// Cards done in the last 3 days whose last comment is not the human's.
+    pub finished: Vec<InboxItem>,
+}
+
+/// Who the board signs comments as; anyone else is an agent or the dispatcher.
+pub const ME: &str = "me";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Task {
@@ -278,6 +316,45 @@ impl Store {
         })
     }
 
+    /// The projects starred in the sidebar, for every browser. A slug whose project is gone
+    /// drops out here, so deleting or renaming a project needs no cleanup.
+    pub fn starred(&self) -> Result<Vec<String>> {
+        let saved: Option<String> = self
+            .conn
+            .query_row("SELECT value FROM meta WHERE key = 'starred_projects'", [], |r| r.get(0))
+            .optional()?;
+        let mut stmt = self.conn.prepare("SELECT slug FROM projects")?;
+        let known: HashSet<String> = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+        Ok(saved.unwrap_or_default().split(',').filter(|s| known.contains(*s)).map(String::from).collect())
+    }
+
+    pub fn set_starred(&self, slug: &str, starred: bool) -> Result<()> {
+        let slug = self.find_project(slug)?.slug;
+        self.write(|c| {
+            let mut stars = self.starred()?;
+            stars.retain(|s| *s != slug);
+            if starred {
+                stars.push(slug);
+            }
+            c.execute(
+                "INSERT INTO meta (key, value) VALUES ('starred_projects', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [stars.join(",")],
+            )?;
+            // Other open boards move the project too.
+            c.execute("UPDATE meta SET value = value + 1 WHERE key = 'changes'", [])?;
+            Ok(())
+        })
+    }
+
+    /// Seconds from `at` (an ISO time) to now; `None` when SQLite cannot read `at` as a time.
+    pub fn seconds_since(&self, at: &str) -> Result<Option<i64>> {
+        Ok(self.conn.query_row(
+            "SELECT CAST(strftime('%s', 'now') AS INTEGER) - CAST(strftime('%s', ?1) AS INTEGER)",
+            [at],
+            |r| r.get(0),
+        )?)
+    }
+
     /// Immediate, so concurrent writers queue up on the busy timeout instead of failing halfway.
     fn write<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
         self.conn.execute_batch("BEGIN IMMEDIATE")?;
@@ -415,7 +492,12 @@ impl Store {
             (SELECT group_concat(repo, ',' ORDER BY r.rowid) FROM project_repos r WHERE r.project_id = p.id),
             p.color, p.created_at,
             (SELECT count(*) FROM tasks t WHERE t.project_id = p.id AND t.status <> ?1),
-            (SELECT count(*) FROM tasks t WHERE t.project_id = p.id)
+            (SELECT count(*) FROM tasks t WHERE t.project_id = p.id),
+            (SELECT count(*) FROM tasks t WHERE t.project_id = p.id AND t.status = 'review'),
+            (SELECT count(*) FROM tasks t WHERE t.project_id = p.id AND t.human AND t.status <> ?1),
+            max(coalesce((SELECT max(t.updated_at) FROM tasks t WHERE t.project_id = p.id), ''),
+                coalesce((SELECT max(c.created_at) FROM comments c JOIN tasks t ON t.id = c.task_id
+                          WHERE t.project_id = p.id), ''))
         FROM projects p";
 
     fn project_row(r: &Row) -> rusqlite::Result<Project> {
@@ -428,6 +510,9 @@ impl Store {
             created_at: r.get(5)?,
             open: r.get(6)?,
             total: r.get(7)?,
+            review: r.get(8)?,
+            waiting: r.get(9)?,
+            changed_at: r.get(10)?,
         })
     }
 
@@ -674,6 +759,51 @@ impl Store {
             .query_row([id], Self::task_row)
             .optional()?
             .ok_or_else(|| Error::NotFound(format!("no task #{id}")))
+    }
+
+    /// The cards with these ids that still exist, in one read.
+    pub fn tasks_by_ids(&self, ids: &[i64]) -> Result<Vec<Task>> {
+        let sql = format!("{} WHERE t.id IN (SELECT value FROM json_each(?1))", Self::TASK_SELECT);
+        let ids = format!("[{}]", ids.iter().map(i64::to_string).collect::<Vec<_>>().join(","));
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map([ids], Self::task_row)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// The Inbox view in one read: each card with its latest comment, sorted into groups by
+    /// SQL. Done cards older than 3 days never leave the database.
+    pub fn inbox(&self) -> Result<Inbox> {
+        let sql = format!(
+            "SELECT * FROM (
+                SELECT x.*, l.author AS last_author, l.created_at AS last_at, l.body,
+                    CASE WHEN x.status <> ?1 AND (x.human OR x.status = 'review') AND l.author <> ?2 THEN 'waiting'
+                         WHEN x.status = 'review' THEN 'review'
+                         WHEN x.status <> ?1 AND x.human THEN 'flagged'
+                         WHEN x.status = ?1 AND l.author <> ?2 THEN 'finished' END AS kind
+                FROM ({} WHERE t.status <> ?1 OR t.updated_at >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-3 days')) x
+                LEFT JOIN comments l ON l.id = (SELECT max(c.id) FROM comments c WHERE c.task_id = x.id))
+             WHERE kind IS NOT NULL
+             ORDER BY CASE kind WHEN 'finished' THEN updated_at ELSE coalesce(last_at, updated_at) END DESC, id DESC",
+            Self::TASK_SELECT
+        );
+        let mut inbox = Inbox::default();
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut rows = stmt.query(params![DONE, ME])?;
+        while let Some(r) = rows.next()? {
+            let last = match r.get::<_, Option<String>>(12)? {
+                Some(author) => Some(Last { author, at: r.get(13)?, excerpt: excerpt(&r.get::<_, String>(14)?) }),
+                None => None,
+            };
+            let item = InboxItem { task: Self::task_row(r)?, last };
+            match r.get::<_, String>(15)?.as_str() {
+                "waiting" => inbox.waiting.push(item),
+                "review" => inbox.review.push(item),
+                "flagged" => inbox.flagged_count += 1,
+                _ if inbox.finished.len() < 20 => inbox.finished.push(item),
+                _ => {}
+            }
+        }
+        Ok(inbox)
     }
 
     pub fn find_task(&self, key: &str) -> Result<Task> {
@@ -1219,6 +1349,28 @@ fn squash(s: &str) -> String {
         out.push_str(word);
     }
     out
+}
+
+/// A comment as one line of plain text for a list: Markdown marks and link targets dropped,
+/// the first 200 characters kept.
+fn excerpt(body: &str) -> String {
+    let mut out = String::with_capacity(body.len().min(400));
+    for line in body.lines() {
+        let line = line.trim_start().trim_start_matches(['#', '>']).trim_start();
+        let line = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")).unwrap_or(line);
+        let mut chars = line.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                '*' | '`' | '[' => {}
+                '!' if chars.peek() == Some(&'[') => {}
+                // `[text](target)` keeps the text.
+                ']' if chars.peek() == Some(&'(') => chars.by_ref().take_while(|c| *c != ')').for_each(drop),
+                _ => out.push(c),
+            }
+        }
+        out.push(' ');
+    }
+    squash(&out).chars().take(200).collect()
 }
 
 fn clean_title(title: &str) -> Result<String> {
@@ -1966,5 +2118,116 @@ mod tests {
         assert_eq!(api.repos, ["acme/backend/api"]);
         assert_eq!(s.project_by_repo("acme/backend/web").unwrap().unwrap().id, web.id);
         assert!(s.create_project("api2", "", Some("acme/backend/api")).is_err(), "still one project per repo");
+    }
+
+    /// Sets a column straight in the database, for times a test cannot wait for.
+    fn set(s: &Store, sql: &str, id: i64) {
+        s.conn.execute(sql, [id]).unwrap();
+    }
+
+    #[test]
+    fn projects_count_review_and_flagged_cards_and_know_their_last_change() {
+        let (_dir, s) = store();
+        let api = s.create_project("api", "", None).unwrap();
+        s.create_project("empty", "", None).unwrap();
+        let review = |title| {
+            let t = s.create_task(api.id, title, "").unwrap();
+            s.update_task(t.id, TaskPatch { status: Some("review".into()), ..Default::default() }).unwrap()
+        };
+        let a = review("A");
+        review("B");
+        let flagged = s.create_task(api.id, "C", "").unwrap();
+        s.update_task(flagged.id, TaskPatch { human: Some(true), ..Default::default() }).unwrap();
+        let done = s.create_task(api.id, "D", "").unwrap();
+        s.update_task(done.id, TaskPatch { human: Some(true), status: Some(DONE.into()), ..Default::default() })
+            .unwrap();
+
+        let p = s.project_by_slug("api").unwrap().unwrap();
+        assert_eq!((p.open, p.review, p.waiting), (3, 2, 1), "a done card counts in neither");
+        assert_eq!(s.project_by_slug("empty").unwrap().unwrap().changed_at, "");
+
+        set(&s, "UPDATE tasks SET updated_at = '2020-01-01T00:00:00Z' WHERE project_id = ?1", api.id);
+        let newest = s.get_task(a.id).unwrap();
+        assert_eq!(s.project_by_slug("api").unwrap().unwrap().changed_at, newest.updated_at);
+        let c = s.add_comment(a.id, "claude-code", "Done", &[]).unwrap();
+        let listed = s.list_projects().unwrap();
+        assert_eq!(listed.iter().find(|p| p.slug == "api").unwrap().changed_at, c.created_at, "a comment counts");
+    }
+
+    #[test]
+    fn stars_follow_the_projects() {
+        let (_dir, s) = store();
+        for slug in ["api", "web", "ops"] {
+            s.create_project(slug, "", None).unwrap();
+        }
+        assert!(s.starred().unwrap().is_empty());
+        let before = s.changes().unwrap();
+        s.set_starred("web", true).unwrap();
+        s.set_starred("api", true).unwrap();
+        s.set_starred("web", true).unwrap();
+        assert_eq!(s.starred().unwrap(), ["api", "web"], "in the order starred, once each");
+        assert!(s.changes().unwrap() > before, "other open boards move the project");
+        assert!(matches!(s.set_starred("nope", true), Err(Error::NotFound(_))));
+
+        s.set_starred("api", false).unwrap();
+        s.set_starred("ops", true).unwrap();
+        s.delete_project("web").unwrap();
+        assert_eq!(s.starred().unwrap(), ["ops"], "a deleted project drops out on read");
+    }
+
+    #[test]
+    fn the_inbox_sorts_cards_by_who_wrote_last() {
+        let (_dir, s) = store();
+        let api = s.create_project("api", "", None).unwrap();
+        let card = |title: &str, status: &str, human, last: &[&str]| {
+            let t = s.create_task(api.id, title, "").unwrap();
+            for author in last {
+                s.add_comment(t.id, author, &format!("From {author}"), &[]).unwrap();
+            }
+            s.update_task(t.id, TaskPatch { status: Some(status.into()), human: Some(human), ..Default::default() })
+                .unwrap()
+        };
+        let answered = card("Answered", "review", false, &[ME, "claude-code"]);
+        let stuck = card("Stuck", "doing", true, &["kanzo-dispatch"]);
+        card("Mine last", "review", false, &["claude-code", ME]);
+        card("Quiet review", "review", false, &[]);
+        card("Flagged", "todo", true, &[]);
+        card("Flagged, mine last", "todo", true, &["claude-code", ME]);
+        card("Finished", DONE, false, &["claude-code"]);
+        card("Closed by me", DONE, false, &["claude-code", ME]);
+        let old = card("Finished long ago", DONE, false, &["claude-code"]);
+        card("Busy", "doing", false, &["claude-code"]);
+        set(&s, "UPDATE tasks SET updated_at = '2020-01-01T00:00:00Z' WHERE id = ?1", old.id);
+        // The stuck card's reply is the newest, so it leads.
+        set(&s, "UPDATE comments SET created_at = '2020-01-01T00:00:00Z' WHERE task_id = ?1", answered.id);
+
+        let inbox = s.inbox().unwrap();
+        let titles = |items: &[InboxItem]| items.iter().map(|i| i.task.title.clone()).collect::<Vec<_>>();
+        assert_eq!(titles(&inbox.waiting), ["Stuck", "Answered"]);
+        assert_eq!(titles(&inbox.review).len(), 2);
+        assert!(titles(&inbox.review).contains(&"Mine last".to_string()));
+        assert_eq!(inbox.flagged_count, 2);
+        assert_eq!(titles(&inbox.finished), ["Finished"]);
+        let last = inbox.waiting[1].last.as_ref().unwrap();
+        assert_eq!(
+            (last.author.as_str(), last.at.as_str(), last.excerpt.as_str()),
+            ("claude-code", "2020-01-01T00:00:00Z", "From claude-code")
+        );
+        assert_eq!(inbox.waiting[0].task.id, stuck.id);
+        let quiet = inbox.review.iter().find(|i| i.task.title == "Quiet review").unwrap();
+        assert!(quiet.last.is_none());
+
+        for n in 0..25 {
+            card(&format!("Done {n}"), DONE, false, &["claude-code"]);
+        }
+        assert_eq!(s.inbox().unwrap().finished.len(), 20, "at most 20");
+    }
+
+    #[test]
+    fn an_excerpt_is_one_plain_line() {
+        let body = "## Done\n\n**Shipped** the fix, see [the PR](https://example.com/pr/1) and `make test`.\n\n- one\n* two\n> quoted ![shot](/images/a.png)";
+        assert_eq!(excerpt(body), "Done Shipped the fix, see the PR and make test. one two quoted shot");
+        assert_eq!(excerpt(&"é".repeat(300)).chars().count(), 200);
+        assert_eq!(excerpt("snake_case stays"), "snake_case stays");
     }
 }

@@ -10,13 +10,36 @@ one card.
 |---|---|
 | Any comment, card has no session, and a live session already works the card | Handed to that session (see "Who works the card"); the card gets one comment, "Sent to the session already on this card", with its name and app link. Later comments go there too |
 | Any comment, card has no session and nobody works it (a leading `@claude` is optional and dropped) | Starts a session for the card and comments "Picked up" with the app link and the folder |
-| Any comment, card has a session (done or not) | Typed into that same session; if it is gone, it goes to whoever else works the card, else a new one starts from the card's history |
+| Any comment, card has a session (done or not) | Typed into that same session; if it is gone, it goes to whoever else works the card, else the card's earlier session is resumed, else a new one starts from the card's history |
+| Any comment, the dispatcher's own session for the card ended or was stopped | `claude --bg --resume <session id> <comment>` in its folder, so it keeps the conversation; a "Resumed" comment. If the resume fails, a new session starts from the full card |
+| `@claude start` | Starts an agent with the card as the brief. A live session already on the card: one comment naming it, nothing starts |
 | Owner found but not reachable (no herdr pane, or delivery failed twice) | No second agent. A comment says the session is on the card and could not be reached, `@claude new` starts a separate one; human set |
-| `@claude new ...` | Skips the search and starts a separate session. A session the dispatcher started for the card is stopped first; any other is left alone |
-| `@claude stop` | Dispatcher's own session: `claude stop`, then a comment. A session it did not start: only detached from the card (never stopped), and the next comment starts a new agent |
+| `@claude new ...` | Skips the search and starts a separate session, never a resume. A session the dispatcher started for the card is stopped first; any other is left alone |
+| `@claude stop` | Dispatcher's own session: `claude stop`, then a comment. A session it did not start: only detached from the card (never stopped), and the next comment starts a new agent. A follow-up still waiting for the session is marked failed |
 | Starts with `[note]` (the board's "Do not send to agent" box adds it) | Nothing: no session starts and an attached session is not told |
+| New comments on more than `--burst` (5) cards in one pass | Nothing starts and nothing is typed in: each comment is marked `held` in status.json, one log line, no card comments. A later comment on one of those cards behaves normally |
 
 Comments by anyone else (agents, the dispatcher itself) never start or reach a session.
+
+When a comment that started or reached a session has pictures, the typed line ends with "(N
+picture(s) attached to this comment: get_task on the card lists the file paths, read them.)". No
+paths are typed.
+
+## Nudge, then flag
+
+Dave reads only the card, so a session that answers only in its own terminal has not answered.
+After a comment is started or delivered, when the session's turn ends (not working, at least 20 s
+after delivery) and no later comment on the card comes from anyone other than `me` or
+`kanzo-dispatch`, the dispatcher types one line into the session:
+
+    Card <key>: Dave has no answer on the card yet and he reads only the card. Post your answer or
+    your question as a card comment now with the kanzo tools, and set the card status.
+
+If the next turn also ends without an answer: the comment "The agent finished without answering
+here. Open the session to see what it did: <link>. Comment again to retry.", human set, card state
+`silent`. At most one nudge per delivered comment, never into a working or blocked session. A card
+moved to review or done counts as answered. Adopted sessions get the nudge too, and the flag while
+they are alive.
 
 ## Who works the card
 
@@ -36,7 +59,7 @@ Comments by anyone else (agents, the dispatcher itself) never start or reach a s
 5. The text typed in is one line starting `Dave commented on card <key> (<title>): ...`, since an
    adopted session may work several cards.
 6. An adopted session is outside the `--max` cap and the watchdog: it was not started for the
-   card, so only a failed delivery is reported.
+   card, so only a failed delivery and the nudge apply. It is never stopped or resumed.
 
 ## Where the session runs
 
@@ -55,9 +78,13 @@ key, like `api#12 Fix the login`, so `claude attach api#12` finds it.
 - At most `--max` (3) sessions working at once. Extra asks get a "Queued" comment and start when one finishes.
 - Never two sessions for one card, counting sessions Dave opened himself (terminal, app, Slack).
 - A follow-up for a busy session waits; after 30 minutes the card says it did not get through and is set for the human.
-- A session that is gone, or will not take a follow-up, is stopped and replaced by a new one built from the full card.
-- A session that ends, goes idle or waits on a permission with nothing written to the card since
-  pickup (or since the last follow-up): a comment with the app link, and human set.
+- A session that is gone is resumed with the comment; one that will not take a follow-up is stopped
+  and replaced by a new one built from the full card.
+- A session that goes idle without answering: the nudge, then the flag (above). A session that
+  ends or waits on a permission with nothing written to the card since pickup (or since the last
+  follow-up): a comment with the app link, and human set.
+- A session the dispatcher started, on a card that is done, idle for `--idle-stop` seconds (3600;
+  0 turns it off) with nothing waiting: `claude stop`, no card comment. The next comment resumes it.
 - `claude` fails to start: a comment with the short error, human set. Two failures in a row for the
   same cause: no more starts until the dispatcher restarts (logged, and each later ask is told so).
 
@@ -69,9 +96,11 @@ key, like `api#12 Fix the login`, so `claude attach api#12` finds it.
 | Folder | `GET /api/board?project=<slug>` for the project's repos |
 | Its comments and the human flag | MCP on `/mcp` (`add_comment` with author `kanzo-dispatch`, `update_task`). The HTTP API signs every comment `me`, so it cannot be used |
 | First run | Reads `max(id)` from `comments` in `kanzo.db`, read-only, once. Nothing older is ever acted on |
+| Done cards | One read-only query on `kanzo.db` (`--db`): `SELECT id FROM tasks WHERE status = 'done' AND id IN (...)`. Cheaper than `GET /api/board?project=all&done=all`, which returns every card with its description |
 | Start | `claude --bg --name "<key> <title>" "<brief>"` in the folder; the short id comes from its output |
+| Resume | `claude --bg --resume <session id> "<follow-up>"` in the session's original folder |
 | Find | `claude agents --json --all`; `~/.claude/jobs/<id>/state.json` for the session id and app link |
-| Owner | the live sessions' transcripts under `~/.claude/projects/`, read-only |
+| Owner | the live sessions' transcripts under `~/.claude/projects/`, read-only and incremental: each file is read from where the last pass stopped |
 | Follow-up, background session | `claude attach <id>` in a private tmux: wait for the prompt, type the text as one line, Enter, check the transcript, Ctrl+Z |
 | Follow-up, terminal session | `herdr agent list` for the pane, then `herdr agent prompt <pane> <text>` (`--herdr`, default `~/.local/bin/herdr`); waits while the pane is working or blocked |
 | Stop | `claude stop <id>`, only ever on a session the dispatcher started |
@@ -86,12 +115,37 @@ comment ids seen, the card to session map (adopted sessions marked, with their k
 the sessions detached from each card, and the queue. A comment id is saved as seen before the
 dispatcher acts on it, and a start is recorded before `claude` runs: a crash can drop an ask, but
 never start twice. A start cut off by a crash is adopted if its session shows up by name, otherwise
-the card is told to ask again.
+the card is told to ask again. Per card it also keeps `receipts`: the newest 20 handled comments
+with their state, a sticky card state (`failed`, `unreachable`, `silent`) and, for a session the
+dispatcher started, what a resume needs (session id, name, folder, link). A card untouched for 7
+days is dropped.
+
+## What the board shows
+
+Every pass (`--interval`) the dispatcher rewrites `status.json` beside `state.json` (`--status`),
+mode 0600, atomically. The board reads it; the shape is fixed by a contract the two share:
+
+| Field | What |
+|---|---|
+| `updated` | Heartbeat, rewritten every pass even when nothing changed. Older than 30 s: the watcher is down |
+| `rev` | Bumped only when anything besides `updated` changed; carried across restarts |
+| `interval`, `max` | The loop interval and the `--max` cap |
+| `sessions` | Every live Claude session on the box: `id` (short), `session_id`, `name`, `kind`, `state` (`working`, `idle`, `blocked`, `ended`), `detail` (160 chars), `folder`, `started`, `tokens`, `link`, `origin` (`dispatch`, `adopted`, `other`), `cards` it owns |
+| `cards` | Keyed by task id: `session`, `origin`, `state` (`queued`, `starting`, `working`, `idle`, `blocked`, `ended`, `unreachable`, `silent`, `failed`), `since`, `note`, and `comments`: a receipt per handled comment (`started`, `delivered`, `waiting`, `queued`, `failed`, `held`, `command`) with `at` and `note` |
+| `queue` | Starts waiting for a free slot, oldest first: `task`, `comment`, `at` |
+
+A card's owner is the dispatcher's attached session, else the live session with the latest kanzo
+write on it; a done card shows no owner unless the dispatcher has a session on it. The session list
+is read at most every 15 s just for this file (sooner when the dispatcher needed it anyway); the
+job file (`~/.claude/jobs/<id>/state.json`) is read every pass for `detail`, `tokens` and `link`;
+transcripts are read incrementally, at most 64 MiB per pass, so a restart catches up over a few
+passes. `[note]` comments never appear. "Answered" is not in the file: the board works it out.
 
 ## Run
 
     agent/dispatch/kanzo_dispatch.py --once --dry-run   # what it would do; writes nothing
     agent/dispatch/kanzo_dispatch.py --loop --interval 5
+    agent/dispatch/kanzo_dispatch.py --loop --burst 5 --idle-stop 3600   # the defaults
     python3 agent/dispatch/test_dispatch.py             # throwaway board on 127.0.0.1:8198, fake claude and herdr
     KANZO_TEST_PORT=8196 python3 -W error::ResourceWarning agent/dispatch/test_dispatch.py   # another port
 
@@ -99,7 +153,7 @@ The service is `deploy/kanzo-dispatch.service` (see `deploy/README.md`).
 
 ---
 
-> **Version:** v2 · created 2026-11-21 13:26 EST · updated 2026-11-23 14:59 EST
-> **Changes:** v2 2026-11-23 a comment goes to the live session already on the card; `@claude new`; stop only detaches an adopted session. v1 initial.
+> **Version:** v3 · created 2026-11-21 13:26 EST · updated 2026-11-24
+> **Changes:** v3 2026-11-24 status.json for the board ("What the board shows"); `@claude start`; nudge, then flag; burst guard; resume an ended session; idle stop on done cards; pictures in a follow-up; flags `--status`, `--burst`, `--idle-stop`. v2 2026-11-23 a comment goes to the live session already on the card; `@claude new`; stop only detaches an adopted session. v1 initial.
 > **This file:** /home/claude/dev/kanzo/agent/dispatch/README.md (repo dwertz-at-blenko/kanzo, branch public-url)
 > **Session:** b1475961-06d7-40b0-9eff-f2b47896b6bb · vps as claude · cwd /home/claude/dev
