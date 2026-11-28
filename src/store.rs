@@ -3,7 +3,7 @@
 //! on every request; the rollback journal makes a read touch no extra files at all and
 //! measured about 3x faster per operation.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::Path;
 use std::time::Duration;
@@ -844,6 +844,42 @@ impl Store {
 
     /// The Inbox view in one read: each card with its latest comment, sorted into groups by
     /// SQL. Done cards older than 3 days never leave the database.
+    /// Cards cleared from the Inbox: task id to when. A cleared card stays out until someone
+    /// writes on it after that (with no comment at all: until the card changes).
+    fn inbox_cleared(&self) -> Result<HashMap<i64, String>> {
+        let saved: Option<String> =
+            self.conn.query_row("SELECT value FROM meta WHERE key = 'inbox_cleared'", [], |r| r.get(0)).optional()?;
+        Ok(saved.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default())
+    }
+
+    /// Clears cards from the Inbox, or puts them back. The card itself is not touched. Entries
+    /// for cards the Inbox can no longer show (deleted, or done for 3 days) drop out here.
+    pub fn clear_inbox(&self, tasks: &[i64], cleared: bool) -> Result<()> {
+        self.write(|c| {
+            let at: String = c.query_row(&format!("SELECT {NOW}"), [], |r| r.get(0))?;
+            let mut map = self.inbox_cleared()?;
+            for id in tasks {
+                if cleared {
+                    map.insert(*id, at.clone());
+                } else {
+                    map.remove(id);
+                }
+            }
+            let mut stmt = c.prepare(
+                "SELECT id FROM tasks WHERE status <> ?1 OR updated_at >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-3 days')",
+            )?;
+            let shown: HashSet<i64> = stmt.query_map([DONE], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+            map.retain(|id, _| shown.contains(id));
+            c.execute(
+                "INSERT INTO meta (key, value) VALUES ('inbox_cleared', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [serde_json::to_string(&map).unwrap_or_default()],
+            )?;
+            // Other open boards drop the row too.
+            c.execute("UPDATE meta SET value = value + 1 WHERE key = 'changes'", [])?;
+            Ok(())
+        })
+    }
+
     pub fn inbox(&self) -> Result<Inbox> {
         let sql = format!(
             "SELECT * FROM (
@@ -858,6 +894,7 @@ impl Store {
              ORDER BY CASE kind WHEN 'finished' THEN updated_at ELSE coalesce(last_at, updated_at) END DESC, id DESC",
             Self::TASK_SELECT
         );
+        let cleared = self.inbox_cleared()?;
         let mut inbox = Inbox::default();
         let mut stmt = self.conn.prepare(&sql)?;
         let mut rows = stmt.query(params![DONE, ME])?;
@@ -867,7 +904,16 @@ impl Store {
                 None => None,
             };
             let item = InboxItem { task: Self::task_row(r)?, last };
-            match r.get::<_, String>(15)?.as_str() {
+            let kind: String = r.get(15)?;
+            // The same moment the list is ordered by: the last comment, or the last change.
+            let moved = match (&item.last, kind.as_str()) {
+                (Some(last), "waiting" | "review") => &last.at,
+                _ => &item.task.updated_at,
+            };
+            if kind != "flagged" && cleared.get(&item.task.id).is_some_and(|at| at >= moved) {
+                continue;
+            }
+            match kind.as_str() {
                 "waiting" => inbox.waiting.push(item),
                 "review" => inbox.review.push(item),
                 "flagged" => inbox.flagged_count += 1,
@@ -2288,6 +2334,29 @@ mod tests {
         assert_eq!(inbox.waiting[0].task.id, stuck.id);
         let quiet = inbox.review.iter().find(|i| i.task.title == "Quiet review").unwrap();
         assert!(quiet.last.is_none());
+
+        // Cleared cards leave the Inbox and keep everything else; the flagged count is not a list.
+        let finished = inbox.finished[0].task.id;
+        s.clear_inbox(&[stuck.id, answered.id, quiet.task.id, finished, 9999], true).unwrap();
+        let inbox = s.inbox().unwrap();
+        assert_eq!(
+            (inbox.waiting.len(), titles(&inbox.review), inbox.finished.len()),
+            (0, vec!["Mine last".to_string()], 0)
+        );
+        assert_eq!(inbox.flagged_count, 2);
+        assert_eq!(s.get_task(stuck.id).unwrap().status, "doing", "the card is not touched");
+        assert!(!s.inbox_cleared().unwrap().contains_key(&9999), "a card that is not there is not kept");
+        // A comment later than the clear brings a card back (the clear is moved to long ago, so
+        // both replies are later); putting one back needs none.
+        set(&s, r#"UPDATE meta SET value = replace(value, ':"20', ':"19') WHERE key = 'inbox_cleared' AND ?1"#, 1);
+        s.add_comment(stuck.id, "claude-code", "One more question", &[]).unwrap();
+        s.clear_inbox(&[quiet.task.id], false).unwrap();
+        let inbox = s.inbox().unwrap();
+        assert_eq!(
+            (titles(&inbox.waiting), inbox.review.len()),
+            (vec!["Stuck".to_string(), "Answered".to_string()], 2)
+        );
+        assert_eq!(inbox.finished.len(), 1);
 
         for n in 0..25 {
             card(&format!("Done {n}"), DONE, false, &["claude-code"]);
