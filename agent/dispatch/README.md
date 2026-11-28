@@ -41,6 +41,46 @@ here. Open the session to see what it did: <link>. Comment again to retry.", hum
 moved to review or done counts as answered. Adopted sessions get the nudge too, and the flag while
 they are alive.
 
+## Sessions that wait on Dave
+
+A background session that ends its turn needing Dave is listed by `claude agents --json --all` as
+`blocked`, usually with no process, and its job file (`~/.claude/jobs/<id>/state.json`) holds
+`needs` (one line), `updatedAt` and sometimes `suggestedReply`. The dispatcher puts that on the board:
+
+1. Episode: (session id, `updatedAt`). One ask per episode, once it has been blocked `--ask-after`
+   seconds (120; from `updatedAt`, else from when the dispatcher first saw it). The job file's state
+   decides when it has one, since the session list is read at most every 15 s.
+2. The card, in this order: the card the dispatcher holds for the session; the card of the
+   session's earlier ask; the open card the session last wrote to through Kanzo; else a new card
+   `Answer: <session name>` (doing, human, tags `agent,ask`) in the project whose repo matches the
+   session's folder (a worktree under it too), else in `--ask-project` (`vps-ops`). That project
+   missing: a log line, no ask, a retry a minute later.
+3. One comment as `kanzo-dispatch`, and the human flag (so the Inbox and the push see it):
+
+       **<session name> waits on you.**
+
+       <needs, 700 chars at most>
+
+       Suggested reply: <when the job has one>
+
+       Answer in a comment here and it goes to that session. [Open in Claude](<link>)
+
+4. The card is attached to the session like an adopted one (never stopped, outside `--max`, `@claude
+   stop` only detaches). Dave's comment there goes to it: typed in when its process is idle with the
+   input box free; `claude --bg --resume <session id> <follow-up>` when it has no process (receipt
+   `delivered`, no card comment); never typed into a permission prompt or a question dialog (receipt
+   `waiting`, its note says to open the app). A blocked session is never nudged.
+5. The episode ends when the session no longer waits or leaves the list: the human flag goes off
+   when the dispatcher set it, and `POST /api/inbox/clear` takes the card out of the Inbox (best
+   effort: a 404 is ignored). When an agent other than the dispatcher wrote the card's newest
+   comment, both are left alone: it is an answer Dave has not seen. Nothing is posted.
+6. At most 3 new asks per pass. A later block (new `updatedAt`) comments again on the same card.
+   `--no-asks` turns it off; `--dry-run` writes nothing.
+
+state.json keeps `asks` (`{session id: {task, comment, since, at, flagged, created}}`; `flagged` and
+`created` say whether the dispatcher set the flag or made the card) and `ask_cards` (each session's
+ask card, so a later episode finds it; dropped after 7 days).
+
 ## Who works the card
 
 1. Candidates: `claude agents --json --all` items that are live (listed with a pid and a status,
@@ -104,6 +144,8 @@ key, like `api#12 Fix the login`, so `claude attach api#12` finds it.
 | Follow-up, background session | `claude attach <id>` in a private tmux: wait for the prompt, type the text as one line, Enter, check the transcript, Ctrl+Z |
 | Follow-up, terminal session | `herdr agent list` for the pane, then `herdr agent prompt <pane> <text>` (`--herdr`, default `~/.local/bin/herdr`); waits while the pane is working or blocked |
 | Stop | `claude stop <id>`, only ever on a session the dispatcher started |
+| Ask card | `GET /api/board?project=all` for the projects' repos, `POST /api/tasks`, then `PATCH /api/tasks/{id}` (status, human, tags); only when a waiting session has no card |
+| Inbox clear | `POST /api/inbox/clear` with `{"tasks": [id]}` when an ask ends; errors (404 included) logged at debug level |
 
 `claude`, `tmux` and `herdr` get the dispatcher's environment minus anything named like a token,
 secret, password, credential, API or private key, or VAPID. The push key is also taken out of the
@@ -131,11 +173,12 @@ mode 0600, atomically. The board reads it; the shape is fixed by a contract the 
 | `updated` | Heartbeat, rewritten every pass even when nothing changed. Older than 30 s: the watcher is down |
 | `rev` | Bumped only when anything besides `updated` changed; carried across restarts |
 | `interval`, `max` | The loop interval and the `--max` cap |
-| `sessions` | Every live Claude session on the box: `id` (short), `session_id`, `name`, `kind`, `state` (`working`, `idle`, `blocked`, `ended`), `detail` (160 chars), `folder`, `started`, `tokens`, `link`, `origin` (`dispatch`, `adopted`, `other`), `cards` it owns |
+| `sessions` | Every live Claude session on the box, plus background sessions that wait on Dave with no process: `id` (short), `session_id`, `name`, `kind`, `state` (`working`, `idle`, `blocked`, `ended`), `detail` (160 chars; the `needs` line for a waiting session), `folder`, `started`, `tokens`, `link`, `origin` (`dispatch`, `adopted`, `other`), `cards` it owns (a waiting session with no process: only its ask card) |
 | `cards` | Keyed by task id: `session`, `origin`, `state` (`queued`, `starting`, `working`, `idle`, `blocked`, `ended`, `unreachable`, `silent`, `failed`), `since`, `note`, and `comments`: a receipt per handled comment (`started`, `delivered`, `waiting`, `queued`, `failed`, `held`, `command`) with `at` and `note` |
 | `queue` | Starts waiting for a free slot, oldest first: `task`, `comment`, `at` |
 | `push_key` | The Web Push public key (uncompressed P-256 point, base64url, no padding); "" when push is off. The board hands it to the page at `GET /api/push` |
 | `push` | `on`, `subscriptions` (browsers it would send to), `last_sent` (ISO or ""), `last_error` (host and code only). Never an endpoint |
+| `asks` | `on` (false with `--no-asks`), `open` (episodes with a posted ask). A card with an open ask has `state` `blocked` and `note` the `needs` line. Another tool reads `asks.on` with `push.on`, `push.subscriptions` and `updated` to tell whether Kanzo handles waiting-on-Dave notices: keep these names |
 
 A card's owner is the dispatcher's attached session, else the live session with the latest kanzo
 write on it; a done card shows no owner unless the dispatcher has a session on it. The session list
@@ -174,6 +217,8 @@ inbox and shows "Kanzo: an agent answered"; a tap opens the Inbox, which asks fo
     agent/dispatch/kanzo_dispatch.py --loop --interval 5
     agent/dispatch/kanzo_dispatch.py --loop --burst 5 --idle-stop 3600   # the defaults
     agent/dispatch/kanzo_dispatch.py --loop --no-push   # no Web Push even with the key set
+    agent/dispatch/kanzo_dispatch.py --loop --ask-after 120 --ask-project vps-ops   # the asks defaults
+    agent/dispatch/kanzo_dispatch.py --loop --no-asks   # leave waiting sessions off the board
     python3 agent/dispatch/test_dispatch.py             # throwaway board on 127.0.0.1:8198, fake claude, herdr and push service
     KANZO_TEST_PORT=8196 python3 -W error::ResourceWarning agent/dispatch/test_dispatch.py   # another port
 
@@ -181,7 +226,7 @@ The service is `deploy/kanzo-dispatch.service` (see `deploy/README.md`).
 
 ---
 
-> **Version:** v4 · created 2026-11-21 13:26 EST · updated 2026-11-24
-> **Changes:** v4 2026-11-24 Push: content-free Web Push when an agent answers, `push_key` and `push` in status.json, `--no-push`. v3 2026-11-24 status.json for the board ("What the board shows"); `@claude start`; nudge, then flag; burst guard; resume an ended session; idle stop on done cards; pictures in a follow-up; flags `--status`, `--burst`, `--idle-stop`. v2 2026-11-23 a comment goes to the live session already on the card; `@claude new`; stop only detaches an adopted session. v1 initial.
+> **Version:** v5 · created 2026-11-21 13:26 EST · updated 2026-11-28
+> **Changes:** v5 2026-11-28 "Sessions that wait on Dave": a blocked background session's ask on its card, his answer resumes or reaches it; `asks` in status.json; flags `--ask-after`, `--ask-project`, `--no-asks`. v4 2026-11-24 Push: content-free Web Push when an agent answers, `push_key` and `push` in status.json, `--no-push`. v3 2026-11-24 status.json for the board ("What the board shows"); `@claude start`; nudge, then flag; burst guard; resume an ended session; idle stop on done cards; pictures in a follow-up; flags `--status`, `--burst`, `--idle-stop`. v2 2026-11-23 a comment goes to the live session already on the card; `@claude new`; stop only detaches an adopted session. v1 initial.
 > **This file:** /home/claude/dev/kanzo/agent/dispatch/README.md (repo dwertz-at-blenko/kanzo, branch public-url)
 > **Session:** b1475961-06d7-40b0-9eff-f2b47896b6bb · vps as claude · cwd /home/claude/dev

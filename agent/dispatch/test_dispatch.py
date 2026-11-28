@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-# Version: v4 · created 2026-11-21 13:26 EST · updated 2026-11-24
+# Version: v5 · created 2026-11-21 13:26 EST · updated 2026-11-28
 # Changes: v1 tests for kanzo-dispatch against a throwaway board and a fake claude.
 #          v2 2026-11-23 owner tests: adopt the live session already on a card, a fake herdr for panes.
 #          v3 2026-11-24 status.json, receipts, nudge and flag, burst guard, resume (the fake claude
 #             takes `--bg --resume`), idle stop, `@claude start`, pictures in a follow-up.
 #          v4 2026-11-24 Web Push against a fake push service on loopback (class Push); the fake claude
 #             records which key-like variable names it inherited.
+#          v5 2026-11-28 asks (class Asks): blocked background sessions, their card, flag, inbox clear, resume.
 # This file: /home/claude/dev/kanzo/agent/dispatch/test_dispatch.py (repo dwertz-at-blenko/kanzo, branch public-url)
 # Session: b1475961-06d7-40b0-9eff-f2b47896b6bb · vps as claude · cwd /home/claude/dev
 """kanzo-dispatch against a real, throwaway board and a fake claude.
@@ -1031,6 +1032,363 @@ class Delegation(Base):
                       "(1 picture(s) attached to this comment: get_task on the card lists the file paths, read them.)", t)
         self.assertNotIn(files[0], t)
         self.assertNotIn("picture", kd.follow_up("x#1", [{"id": 5, "body": "b"}], images=[{"comment_id": 4}]))
+
+
+class Asks(Base):
+    """A background session that waits on Dave: one ask per episode on its card, his answer reaches it."""
+
+    NEEDS = "Pick A or B for the export format."
+
+    def job(self, short, **fields):
+        path = pathlib.Path(self.fake_dir, ".claude", "jobs", short, "state.json")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = json.loads(path.read_text()) if path.exists() else {}
+        data.update(fields)
+        path.write_text(json.dumps(data))
+
+    def waiting(self, short, needs=NEEDS, ago=300, alive=False, calls=(), cwd=None, **job):
+        """A background session blocked on Dave since `ago` seconds; with no process unless `alive`."""
+        sid = self.session(short, calls=calls)
+        fields = {"state": "blocked"} if alive else {"pid": None, "status": None, "state": "blocked"}
+        if cwd:
+            fields["cwd"] = cwd
+        self.set_agent(short, **fields)
+        self.job(short, state="blocked", needs=needs, updatedAt=kd.iso(time.time() - ago), sessionId=sid,
+                 name=f"own work {short}", cwd=cwd or self.dev, **job)
+        return sid
+
+    def unblock(self, short):
+        self.job(short, state="working", updatedAt=kd.iso(time.time()))
+
+    def ask_body(self, short, needs=NEEDS):
+        return (f"**own work {short} waits on you.**\n\n{needs}\n\nAnswer in a comment here and it goes to that "
+                f"session. [Open in Claude](https://claude.ai/code/session_OWN{short})")
+
+    def asked(self, short):
+        return self.d.st["asks"][f"sid-{short}"]
+
+    def record_clears(self):
+        cleared, real = [], self.d.board.clear_inbox
+        self.d.board.clear_inbox = lambda ids: (cleared.append([int(i) for i in ids]), real(ids))[1]
+        return cleared
+
+    def test_one_ask_per_episode_and_not_before_ask_after(self):
+        tid = self.card()
+        self.waiting("0a500001", ago=30, calls=self.wrote(tid))
+        self.d.tick()
+        self.assertEqual(self.mine(tid), [])             # blocked 30 s: too soon
+        self.assertFalse(self.human(tid))
+        self.job("0a500001", updatedAt=kd.iso(time.time() - 121))
+        self.d.tick()
+        self.assertEqual(self.mine(tid), [self.ask_body("0a500001")])
+        self.assertTrue(self.human(tid))
+        self.d.tick()
+        self.d.tick()
+        self.assertEqual(len(self.mine(tid)), 1)         # never twice for one episode
+        a = self.asked("0a500001")
+        self.assertEqual((a["task"], a["flagged"], a["created"]), (str(tid), True, False))
+        self.assertEqual(a["comment"], [c["id"] for c in self.comments(tid) if c["author"] == kd.AUTHOR][0])
+        self.assertAlmostEqual(a["since"], time.time() - 121, delta=5)
+        d2 = self.dispatcher()                            # a restart keeps the episode
+        d2.tick()
+        self.assertEqual(len(self.mine(tid)), 1)
+        self.assertEqual(self.starts(), [])
+        self.assertEqual(self.resumes(), [])
+
+    def test_ask_after_falls_back_to_first_seen(self):
+        tid = self.card()
+        self.waiting("0a500002", calls=self.wrote(tid))
+        self.job("0a500002", updatedAt=None)
+        self.d = self.dispatcher(ask_after=0.5)
+        self.d.tick()
+        self.assertEqual(self.mine(tid), [])
+        time.sleep(0.6)
+        self.d.tick()
+        self.d.tick()
+        self.assertEqual(len(self.mine(tid)), 1)
+
+    def test_empty_needs_suggested_reply_long_needs_and_no_link(self):
+        a, b = self.card(title="A"), self.card(title="B")
+        self.waiting("0a500003", needs="", suggestedReply="Use A.", calls=self.wrote(a))
+        long_needs = "Which branch? " + "x " * 400
+        self.waiting("0a500004", needs=long_needs, calls=self.wrote(b))
+        self.job("0a500004", bridgeSessionId=None)
+        self.d.tick()
+        self.assertEqual(self.mine(a), ["**own work 0a500003 waits on you.**\n\nIt stopped and asks for your input.\n\n"
+                                        "Suggested reply: Use A.\n\nAnswer in a comment here and it goes to that "
+                                        "session. [Open in Claude](https://claude.ai/code/session_OWN0a500003)"])
+        (body,) = self.mine(b)
+        self.assertIn(kd.clip(long_needs.strip(), 700), body)
+        self.assertTrue(body.endswith("Answer in a comment here and it goes to that session."))
+
+    def test_card_held_by_the_dispatcher_comes_first(self):
+        tid, other = self.card(), self.card(title="Other")
+        short = self.started(tid)
+        with open(os.path.join(self.fake_dir, ".claude", "projects", "fake", f"sid-{short}.jsonl"), "a") as f:
+            for n, (tool, args, reply, minute) in enumerate(self.wrote(other, 50)):
+                use = {"type": "tool_use", "id": f"h{n}", "name": f"mcp__kanzo__{tool}", "input": args}
+                res = {"type": "tool_result", "tool_use_id": f"h{n}", "content": reply}
+                f.write(json.dumps({"timestamp": f"2026-11-23T10:{minute}:00Z", "message": {"content": [use]}}) + "\n")
+                f.write(json.dumps({"timestamp": f"2026-11-23T10:{minute}:00Z", "message": {"content": [res]}}) + "\n")
+        self.set_agent(short, pid=None, status=None, state="blocked")
+        self.job(short, needs=self.NEEDS, updatedAt=kd.iso(time.time() - 300))
+        self.d.tick()
+        mine = self.mine(tid)
+        self.assertEqual(len(mine), 2)                   # "Picked up", then the ask
+        self.assertTrue(mine[1].startswith(f"**widget#{tid} Make the thing waits on you.**"))
+        self.assertEqual(self.mine(other), [])
+        card = self.d.st["cards"][str(tid)]
+        self.assertEqual((card["ask"], card.get("adopted"), card["short"]), (True, None, short))
+        self.assertFalse(any("without an update" in m for m in mine))
+
+    def test_open_card_with_the_latest_write(self):
+        done, newest_open, older = self.card(title="Done"), self.card(title="Newest open"), self.card(title="Older")
+        http("PATCH", f"/api/tasks/{done}", {"status": "done"})
+        self.waiting("0a500005", calls=self.wrote(older, 10) + self.wrote(newest_open, 20) + self.wrote(done, 30))
+        self.d.tick()
+        self.assertEqual((self.mine(done), self.mine(older)), ([], []))
+        self.assertEqual(self.mine(newest_open), [self.ask_body("0a500005")])
+        card = self.d.st["cards"][str(newest_open)]
+        self.assertEqual((card["adopted"], card["ask"], card["session_id"]), (True, True, "sid-0a500005"))
+
+    def test_new_card_in_the_project_of_the_folder(self):
+        cwd = os.path.join(self.dev, "widget", ".claude", "worktrees", "feature")
+        self.waiting("0a500006", cwd=cwd)
+        self.d.tick()
+        a = self.asked("0a500006")
+        self.assertEqual((a["created"], a["flagged"]), (True, True))
+        t = http("GET", f"/api/tasks/{a['task']}")
+        task = t["task"]
+        self.assertEqual((task["project"], task["title"], task["status"], task["human"]),
+                         ("widget", "Answer: own work 0a500006", "doing", True))
+        self.assertEqual(sorted(task["tags"].split(",") if isinstance(task["tags"], str) else task["tags"]),
+                         ["agent", "ask"])
+        for part in ("own work 0a500006", cwd, "https://claude.ai/code/session_OWN0a500006"):
+            self.assertIn(part, task["description"])
+        self.assertEqual([c["body"] for c in t["comments"]], [self.ask_body("0a500006")])
+
+    def test_new_card_in_the_fallback_project_and_title_clipped(self):
+        self.d = self.dispatcher(ask_project="nolink")
+        self.waiting("0a500007", cwd=os.path.join(self.dev, "not-a-repo"))
+        self.set_agent("0a500007", name="n" * 120)
+        self.d.tick()
+        task = http("GET", f"/api/tasks/{self.asked('0a500007')['task']}")["task"]
+        self.assertEqual(task["project"], "nolink")
+        self.assertEqual(len(task["title"]), 80)
+        self.assertTrue(task["title"].startswith("Answer: nnn") and task["title"].endswith("..."))
+
+    def test_missing_fallback_project_skips_and_retries_once_a_minute(self):
+        self.d = self.dispatcher(ask_project="no-such-project")
+        reads, real = [], self.d.board.projects
+        self.d.board.projects = lambda: (reads.append(1), real())[1]
+        self.waiting("0a500008", cwd=self.dev)
+        with self.assertLogs("kanzo-dispatch", "WARNING") as logs:
+            self.d.tick()
+        self.assertIn("no-such-project", "\n".join(logs.output))
+        self.d.tick()
+        self.assertEqual(len(reads), 1)                  # not again within the minute
+        self.assertEqual(self.d.st.get("asks"), {})
+        self.d.ask_retry["sid-0a500008"] = 0
+        self.d.tick()
+        self.assertEqual(len(reads), 2)
+        self.assertEqual(self.status()["asks"], {"on": True, "open": 0})
+
+    def test_flag_off_at_the_end_only_when_the_dispatcher_set_it(self):
+        mine_flag, theirs = self.card(title="Mine"), self.card(title="Theirs")
+        http("PATCH", f"/api/tasks/{theirs}", {"human": True})
+        self.waiting("0a500009", calls=self.wrote(mine_flag))
+        self.waiting("0a50000a", calls=self.wrote(theirs))
+        self.d.tick()
+        self.assertEqual((self.asked("0a500009")["flagged"], self.asked("0a50000a")["flagged"]), (True, False))
+        self.assertTrue(self.human(mine_flag) and self.human(theirs))
+        self.unblock("0a500009")
+        self.unblock("0a50000a")
+        self.d.tick()
+        self.assertEqual((self.human(mine_flag), self.human(theirs)), (False, True))
+        self.assertEqual(self.d.st["asks"], {})
+        self.assertEqual((len(self.mine(mine_flag)), len(self.mine(theirs))), (1, 1))   # nothing posted at the end
+        self.assertNotIn("ask", self.d.st["cards"].get(str(mine_flag), {}))
+
+    def test_inbox_cleared_at_the_end_and_a_404_is_fine(self):
+        self.assertFalse(kd.Board(URL).clear_inbox([1]))  # the route is not on this board: no exception
+        tid = self.card()
+        cleared = self.record_clears()
+        self.waiting("0a50000b", calls=self.wrote(tid))
+        self.d.tick()
+        self.assertEqual(cleared, [])
+        self.set_agent("0a50000b", state="done")         # gone from the waiting list (job says done)
+        self.job("0a50000b", state="done")
+        with self.assertNoLogs("kanzo-dispatch", "WARNING"):
+            self.d.tick()
+        self.assertEqual(cleared, [[tid]])
+        self.assertFalse(self.human(tid))
+
+    def test_clear_inbox_posts_the_task_ids(self):
+        seen = []
+
+        class Handler(http_server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                seen.append((self.path, json.loads(self.rfile.read(int(self.headers["Content-Length"])))))
+                self.send_response(200)
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+            def log_message(self, *args):
+                pass
+        srv = http_server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        self.assertTrue(kd.Board(f"http://127.0.0.1:{srv.server_port}").clear_inbox(["7", 9]))
+        self.assertEqual(seen, [("/api/inbox/clear", {"tasks": [7, 9]})])
+
+    def test_not_cleared_when_an_agent_answered_last(self):
+        tid = self.card()
+        cleared = self.record_clears()
+        self.waiting("0a50000c", calls=self.wrote(tid))
+        self.d.tick()
+        kd.Board(URL, client="claude-code").comment(tid, "Went with A, see the diff.")
+        self.unblock("0a50000c")
+        self.d.tick()
+        self.assertEqual(cleared, [])
+        self.assertTrue(self.human(tid))                 # still waits on Dave in the Inbox
+        self.assertEqual(self.d.st["asks"], {})
+
+    def test_a_second_episode_comments_again_on_the_same_card(self):
+        self.d = self.dispatcher(ask_project="nolink")
+        self.waiting("0a50000d")
+        self.d.tick()
+        tid = self.asked("0a50000d")["task"]
+        self.unblock("0a50000d")
+        self.d.tick()
+        self.d.tick()                                    # the adopted entry goes: no process, not waiting
+        self.assertNotIn(tid, self.d.st["cards"])
+        self.job("0a50000d", state="blocked", needs="Now the second question.", updatedAt=kd.iso(time.time() - 200))
+        self.d.tick()
+        self.assertEqual(self.asked("0a50000d")["task"], tid)
+        self.assertEqual(self.mine(int(tid)), [self.ask_body("0a50000d"),
+                                               self.ask_body("0a50000d", "Now the second question.")])
+        tasks = http("GET", "/api/board?project=nolink")["tasks"]
+        self.assertEqual(len([t for t in tasks if t["title"] == "Answer: own work 0a50000d"]), 1)
+        self.assertTrue(self.human(int(tid)))
+
+    def test_daves_answer_resumes_the_exited_session(self):
+        tid = self.card()
+        sid = self.waiting("0a50000e", calls=self.wrote(tid))
+        self.d.tick()
+        self.dave(tid, "Go with A.")
+        self.d.tick()
+        self.assertEqual(self.starts(), [])              # nothing new started
+        (r,) = self.resumes()
+        self.assertEqual(r["argv"][:3], ["--bg", "--resume", sid])
+        self.assertEqual(r["argv"][-1], f"Dave commented on card widget#{tid} (Make the thing): Go with A. "
+                                        f"(Answer on the card with the kanzo tools; he reads only the card.)")
+        self.assertIn("Go with A.", self.transcript(sid))
+        dave = [c["id"] for c in self.comments(tid) if c["author"] == "me"][-1]
+        self.assertEqual(self.receipts(tid)[dave], "delivered")
+        self.assertEqual(self.mine(tid), [self.ask_body("0a50000e")])   # no "Resumed" or "Picked up"
+        self.d.tick()
+        self.assertEqual(len(self.resumes()), 1)
+
+    def test_a_session_on_a_permission_prompt_is_not_typed_into(self):
+        tid = self.card()
+        sid = self.waiting("0a50000f", alive=True, calls=self.wrote(tid))   # listed idle and blocked
+        self.d.tick()
+        self.assertEqual(len(self.mine(tid)), 1)
+        self.dave(tid, "Yes, allow it.")
+        self.d.tick()
+        self.d.tick()
+        self.assertEqual((self.calls("attach"), self.resumes(), self.starts()), ([], [], []))
+        self.assertNotIn("Yes, allow it.", self.transcript(sid))
+        dave = [c["id"] for c in self.comments(tid) if c["author"] == "me"][-1]
+        c = self.status()["cards"][str(tid)]["comments"][str(dave)]
+        self.assertEqual(c["state"], "waiting")
+        self.assertIn("open it in the app", c["note"])
+        self.assertIn("https://claude.ai/code/session_OWN0a50000f", c["note"])
+
+    def test_a_live_idle_session_gets_the_typed_delivery(self):
+        tid = self.card()
+        sid = self.waiting("0a500010", alive=True, calls=self.wrote(tid))
+        self.set_agent("0a500010", state="done")         # input box free; the job file still says blocked
+        self.job("0a500010", state="blocked")
+        self.d.tick()
+        self.dave(tid, "Use B.")
+        self.d.tick()
+        self.assertEqual([c["argv"] for c in self.calls("attach")], [["attach", "0a500010"]])
+        self.assertIn(f"Dave commented on card widget#{tid} (Make the thing): Use B.", self.transcript(sid))
+        self.assertEqual(self.resumes(), [])
+
+    def test_a_blocked_session_is_never_nudged(self):
+        self.d = self.dispatcher(nudge_after=0)
+        tid = self.card()
+        short = self.started(tid)
+        self.set_agent(short, status="idle", state="done")
+        self.job(short, state="blocked", needs=self.NEEDS, updatedAt=kd.iso(time.time()))
+        self.d.tick()
+        self.d.tick()
+        self.assertNotIn("Dave has no answer", self.transcript(f"sid-{short}"))
+
+    def test_at_most_three_new_asks_per_pass(self):
+        cards = [self.card(title=f"C{n}") for n in range(4)]
+        for n, t in enumerate(cards):
+            self.waiting(f"0a50002{n}", ago=300 - n, calls=self.wrote(t))
+        self.d.tick()
+        self.assertEqual([len(self.mine(t)) for t in cards], [1, 1, 1, 0])   # oldest first
+        self.d.tick()
+        self.assertEqual([len(self.mine(t)) for t in cards], [1, 1, 1, 1])
+
+    def test_no_asks_is_off(self):
+        self.d = self.dispatcher(asks=False)
+        tid = self.card()
+        self.waiting("0a500030", calls=self.wrote(tid))
+        self.d.tick()
+        self.assertEqual(self.mine(tid), [])
+        s = self.status()
+        self.assertEqual(s["asks"], {"on": False, "open": 0})
+        self.assertEqual(s["sessions"], [])              # exited: not listed when asks are off
+        self.dave(tid, "hello?")                         # and the old rules: a new agent starts
+        self.d.tick()
+        self.assertEqual(len(self.starts()), 1)
+
+    def test_dry_run_writes_nothing(self):
+        tid = self.card()
+        self.waiting("0a500031", calls=self.wrote(tid))
+        self.waiting("0a500032", cwd=os.path.join(self.dev, "widget"))
+        state = pathlib.Path(self.state).read_bytes()
+        status = pathlib.Path(self.state).with_name("status.json").read_bytes()
+        before = len(http("GET", "/api/board?project=widget")["tasks"])
+        d = self.dispatcher(dry_run=True)
+        d.tick()
+        d.tick()
+        self.assertEqual(self.mine(tid), [])
+        self.assertFalse(self.human(tid))
+        self.assertEqual(len(http("GET", "/api/board?project=widget")["tasks"]), before)
+        self.assertEqual(pathlib.Path(self.state).read_bytes(), state)
+        self.assertEqual(pathlib.Path(self.state).with_name("status.json").read_bytes(), status)
+
+    def test_status_json_lists_the_waiting_session_and_its_card(self):
+        tid = self.card()
+        needs = "Choose the column order. " * 12
+        self.waiting("0a500033", needs=needs, calls=self.wrote(tid))
+        self.d.tick()
+        s = self.status()
+        (sess,) = s["sessions"]
+        self.assertEqual((sess["id"], sess["state"], sess["detail"], sess["cards"], sess["origin"]),
+                         ("0a500033", "blocked", kd.clip(needs.strip(), 160), [tid], "adopted"))
+        card = s["cards"][str(tid)]
+        self.assertEqual((card["state"], card["note"], card["session"]), ("blocked", kd.clip(needs.strip(), 200), "0a500033"))
+        self.assertEqual(s["asks"], {"on": True, "open": 1})
+        rev = s["rev"]
+        self.d.tick()
+        self.d.tick()
+        self.assertEqual(self.status()["rev"], rev)      # no churn while nothing changes
+        self.unblock("0a500033")
+        self.d.tick()
+        s = self.status()
+        self.assertGreater(s["rev"], rev)
+        self.assertEqual(s["asks"], {"on": True, "open": 0})
+        self.assertEqual(s["sessions"], [])              # no process and no longer waiting
 
 
 class FakePushService:
