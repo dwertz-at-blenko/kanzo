@@ -2053,24 +2053,55 @@ function inboxRow(t, done) {
       el("span", { class: "title" }, t.title)),
     last ? el("div", { class: "last" }, el("b", {}, last.author), " · ", timeEl(last.at),
       last.excerpt ? el("span", { class: "excerpt" }, " · ", last.excerpt) : null) : null,
-    done ? el("button", { class: "btn done", type: "button", title: `Move ${key(t)} to done`,
-                          onclick: (e) => { e.stopPropagation(); finishTask(t); } }, icon("check"), "Done") : null);
+    el("div", { class: "acts" },
+      el("button", { class: "ghost clear", type: "button", title: `Clear ${key(t)} from the Inbox (it comes back when someone writes on it)`,
+                     "aria-label": `Clear ${key(t)} from the Inbox`,
+                     onclick: (e) => { e.stopPropagation(); clearInbox([t], true); } }, icon("close")),
+      done ? el("button", { class: "btn done", type: "button", title: `Move ${key(t)} to done`,
+                            onclick: (e) => { e.stopPropagation(); finishTask(t); } }, icon("check"), "Done") : null));
 }
 
-function viewGroup(title, rows, extra = {}) {
+// Clearing hides a card from the Inbox until someone writes on it again; the card is not changed.
+async function clearInbox(tasks, cleared) {
+  try {
+    state.inbox = await api("POST", "/inbox/clear", { tasks: tasks.map((t) => t.id), undo: !cleared });
+  } catch (err) { return toast(err.message); }
+  renderNav();
+  if (state.view) { renderHeader(); renderView(); }
+  if (cleared) {
+    toast(el("span", {}, tasks.length === 1 ? `${key(tasks[0])} cleared` : `${plural(tasks.length, "card")} cleared`,
+      el("button", { type: "button", class: "undo", onclick: () => { document.querySelector(".toast")?.remove(); clearInbox(tasks, false); } }, "Undo")));
+  }
+}
+
+// "Clear all" asks once more in place: the second click within a few seconds does it. The armed
+// group lives outside the button, because a reload of the Inbox draws the button again.
+const clearArmed = { group: "", at: 0 };
+function clearAll(group, rows) {
+  const armed = () => clearArmed.group === group && Date.now() - clearArmed.at < 4000;
+  const button = el("button", { type: "button", class: "clear-all", onclick: () => {
+    if (armed()) { clearArmed.at = 0; return clearInbox(rows, true); }
+    Object.assign(clearArmed, { group, at: Date.now() });
+    button.textContent = `Clear ${rows.length}?`;
+    setTimeout(() => { if (!armed() && state.view === "inbox") renderInbox(); }, 4100);
+  } }, armed() ? `Clear ${rows.length}?` : "Clear all");
+  return button;
+}
+
+function viewGroup(title, rows, extra = {}, action = null) {
   return el("section", { class: "view-group", ...extra },
-    el("h2", {}, title, el("span", { class: "count" }, String(rows.length))), ...rows);
+    el("h2", {}, title, el("span", { class: "count" }, String(rows.length)), action), ...rows);
 }
 
 function renderInbox() {
   const inbox = state.inbox;
   if (!inbox) { $("#view").replaceChildren(); return; }
   const parts = [
-    inbox.waiting.length ? viewGroup("Agents wait on you", inbox.waiting.map((t) => inboxRow(t, true)), { "data-group": "waiting" }) : null,
-    inbox.review.length ? viewGroup("In review", inbox.review.map((t) => inboxRow(t, true)), { "data-group": "review" }) : null,
+    inbox.waiting.length ? viewGroup("Agents wait on you", inbox.waiting.map((t) => inboxRow(t, true)), { "data-group": "waiting" }, clearAll("waiting", inbox.waiting)) : null,
+    inbox.review.length ? viewGroup("In review", inbox.review.map((t) => inboxRow(t, true)), { "data-group": "review" }, clearAll("review", inbox.review)) : null,
     inbox.flagged_count ? el("button", { class: "view-link", type: "button", onclick: showFlagged },
       icon("human"), `${plural(inbox.flagged_count, "other card")} flagged for you`) : null,
-    inbox.finished.length ? viewGroup("Finished by agents, last 3 days", inbox.finished.map((t) => inboxRow(t, false)), { "data-group": "finished" }) : null,
+    inbox.finished.length ? viewGroup("Finished by agents, last 3 days", inbox.finished.map((t) => inboxRow(t, false)), { "data-group": "finished" }, clearAll("finished", inbox.finished)) : null,
   ].filter(Boolean);
   $("#view").replaceChildren(pushHint() || "", ...(parts.length ? parts : [el("p", { class: "view-empty" }, "Nothing waits on you.")]));
 }

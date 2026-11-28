@@ -194,6 +194,7 @@ fn router(home: Home, guard: Arc<Guard>, shutdown: CancellationToken, remote: Op
         .route("/api/changes", get(changes))
         .route("/api/agents", get(agents))
         .route("/api/inbox", get(inbox))
+        .route("/api/inbox/clear", post(clear_inbox))
         .route("/api/board", get(board))
         .route("/api/search", get(search))
         .route("/api/activity", get(activity))
@@ -739,6 +740,28 @@ async fn push_unsubscribe(State(home): Shared, req: Request) -> Response {
 
 async fn inbox(State(home): Shared) -> Response {
     with_store(home, |_, s| s.inbox()).await
+}
+
+/// At most this many cards in one clear: the Inbox lists fewer.
+const CLEAR_MAX: usize = 500;
+
+#[derive(Deserialize)]
+struct ClearInbox {
+    tasks: Vec<i64>,
+    /// Puts the cards back instead.
+    #[serde(default)]
+    undo: bool,
+}
+
+async fn clear_inbox(State(home): Shared, Json(r): Json<ClearInbox>) -> Response {
+    with_store(home, move |_, s| {
+        if r.tasks.len() > CLEAR_MAX {
+            return Err(Error::Invalid(format!("at most {CLEAR_MAX} cards in one clear")));
+        }
+        s.clear_inbox(&r.tasks, !r.undo)?;
+        s.inbox()
+    })
+    .await
 }
 
 /// The done column only grows, and every change reloads the board.
@@ -1666,6 +1689,13 @@ mod tests {
                 (code, serde_json::from_str::<Value>(&body).unwrap()),
                 (200, json!({ "waiting": [], "review": [], "flagged_count": 0, "finished": [] }))
             );
+
+            let (code, body) = http(port, "POST", "/api/inbox/clear", r#"{"tasks": [1, 2]}"#).await;
+            assert_eq!((code, serde_json::from_str::<Value>(&body).unwrap()["waiting"].clone()), (200, json!([])));
+            let (code, _) = http(port, "POST", "/api/inbox/clear", r#"{"tasks": [1], "undo": true}"#).await;
+            assert_eq!(code, 200);
+            let (code, _) = http(port, "POST", "/api/inbox/clear", r#"{"all": true}"#).await;
+            assert!((400..500).contains(&code), "a clear names its cards: {code}");
 
             let (code, _) = http(port, "PATCH", "/api/settings", r#"{"project": "api", "starred": true}"#).await;
             assert_eq!(code, 200);

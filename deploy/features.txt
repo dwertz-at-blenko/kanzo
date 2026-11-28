@@ -39,6 +39,7 @@ project stars          | /api/board           | 200     | "starred":
 agents change token    | /api/changes         | 200     | "agents":
 agents api             | /api/agents          | 200     | "alive":
 inbox api              | /api/inbox           | 200     | "flagged_count":
+inbox clear            | /app.js              | 200     | function clearInbox
 version api            | /api/version         | 200     | "commit":"
 app manifest           | /manifest.webmanifest | 200    | "display":"standalone"
 app icon               | /icon-192.png        | 200
