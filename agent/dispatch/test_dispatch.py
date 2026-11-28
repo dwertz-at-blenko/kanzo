@@ -1297,7 +1297,8 @@ class Asks(Base):
 
     def test_a_session_on_a_permission_prompt_is_not_typed_into(self):
         tid = self.card()
-        sid = self.waiting("0a50000f", alive=True, calls=self.wrote(tid))   # listed idle and blocked
+        sid = self.waiting("0a50000f", alive=True, calls=self.wrote(tid))
+        self.set_agent("0a50000f", status="waiting")     # neither idle nor working: something is on its screen
         self.d.tick()
         self.assertEqual(len(self.mine(tid)), 1)
         self.dave(tid, "Yes, allow it.")
@@ -1314,14 +1315,28 @@ class Asks(Base):
     def test_a_live_idle_session_gets_the_typed_delivery(self):
         tid = self.card()
         sid = self.waiting("0a500010", alive=True, calls=self.wrote(tid))
-        self.set_agent("0a500010", state="done")         # input box free; the job file still says blocked
-        self.job("0a500010", state="blocked")
-        self.d.tick()
+        self.d.tick()                                    # listed idle and blocked: its turn ended, the box is free
         self.dave(tid, "Use B.")
         self.d.tick()
         self.assertEqual([c["argv"] for c in self.calls("attach")], [["attach", "0a500010"]])
         self.assertIn(f"Dave commented on card widget#{tid} (Make the thing): Use B.", self.transcript(sid))
         self.assertEqual(self.resumes(), [])
+
+    def test_no_second_comment_when_the_agent_asked_on_the_card(self):
+        tid = self.card()
+        kd.Board(URL, client="claude-code").comment(tid, "Which one, A or B?")
+        http("PATCH", f"/api/tasks/{tid}", {"human": True})
+        self.waiting("0a500041", calls=self.wrote(tid))
+        self.d.tick()
+        self.assertEqual(self.mine(tid), [])             # the agent's question is in the Inbox already
+        self.assertEqual((self.asked("0a500041")["task"], self.asked("0a500041")["flagged"]), (str(tid), False))
+        self.assertTrue(self.d.st["cards"][str(tid)]["ask"])
+        self.dave(tid, "B.")
+        self.d.tick()
+        self.assertEqual(len(self.resumes()), 1)         # and his answer still goes to that session
+        self.unblock("0a500041")
+        self.d.tick()
+        self.assertTrue(self.human(tid))                 # not the dispatcher's flag: left alone
 
     def test_a_blocked_session_is_never_nudged(self):
         self.d = self.dispatcher(nudge_after=0)
