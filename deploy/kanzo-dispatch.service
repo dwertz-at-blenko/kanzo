@@ -1,6 +1,8 @@
-# Version: v2 · created 2026-11-21 13:26 EST · updated 2026-11-24
+# Version: v3 · created 2026-11-21 13:26 EST · updated 2026-11-28 15:12 EST
 # Changes: v1 user unit for kanzo-dispatch (comment @claude on a card to start a session).
 #          v2 2026-11-24 start through deploy/run-dispatch.sh, which brings the Web Push key from the vault.
+#          v3 2026-11-28 ExecStop ends the dispatcher itself: since v2 the main process is `bws`, and a
+#          restart left the old dispatcher running beside the new one.
 # This file: /home/claude/dev/kanzo/deploy/kanzo-dispatch.service (repo dwertz-at-blenko/kanzo, branch public-url)
 # Session: b1475961-06d7-40b0-9eff-f2b47896b6bb · vps as claude · cwd /home/claude/dev
 [Unit]
@@ -27,6 +29,8 @@ RestartSec=10
 # already up. Started from here, it would sit in this unit's cgroup, and a restart would kill
 # every background session on the box. Stop only the dispatcher itself.
 KillMode=process
+# The main process is `bws run`, which does not pass SIGTERM on to the dispatcher under it.
+ExecStop=/home/claude/dev/kanzo/deploy/run-dispatch.sh --stop
 # No PrivateTmp: the claude daemon's sockets live in /tmp/cc-daemon-<uid>, and so does the
 # dispatcher's private tmux socket.
 
