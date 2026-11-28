@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Version: v5 · created 2026-11-21 13:26 EST · updated 2026-11-24
+# Version: v6 · created 2026-11-21 13:26 EST · updated 2026-11-28
 # Changes: v1 watch the board for Dave's @claude comments and run one background Claude session per card.
 #          v2 2026-11-23 any comment by Dave starts or reaches the session; "[note]" comments are skipped.
 #          v3 2026-11-23 a comment goes to the live session already working the card (background or a
@@ -10,6 +10,10 @@
 #             follow-ups say when a comment has pictures.
 #          v5 2026-11-24 Web Push: one empty signed push per browser when an agent answers (class Push),
 #             the key taken out of the environment at start, `push_key` and `push` in status.json, --no-push.
+#          v6 2026-11-28 asks: a background session blocked on Dave gets one comment per episode on its card
+#             (found or made), the human flag, and routing, so his answer on the card resumes or reaches it;
+#             `asks` in state.json and status.json, blocked sessions listed even with no process,
+#             --ask-after, --ask-project, --no-asks, Board.clear_inbox.
 # This file: /home/claude/dev/kanzo/agent/dispatch/kanzo_dispatch.py (repo dwertz-at-blenko/kanzo, branch public-url)
 # Session: b1475961-06d7-40b0-9eff-f2b47896b6bb · vps as claude · cwd /home/claude/dev
 """kanzo-dispatch: delegate a card to Claude by commenting on it.
@@ -34,6 +38,9 @@ type a follow-up into an idle background session, and `herdr agent list` /
 Writes: state.json and, every pass, status.json beside it for the board.
 Sends: with KANZO_VAPID_PRIVATE_KEY set, an empty signed Web Push to each browser stored on the
 board when a card newly waits on Dave (class Push); subscriptions read read-only from the database.
+Asks: a background session that stops and waits on Dave (its job file says `blocked`, with a
+`needs` line) gets one comment on its card, the human flag and the card's routing, so his answer
+there reaches it, resuming it when its process is gone (Dispatcher.asks_pass).
 
     kanzo_dispatch.py --once                 # one pass
     kanzo_dispatch.py --loop --interval 5    # the service
@@ -103,6 +110,13 @@ PUSH_BACKOFF = (60, 3600)   # first and longest wait after a 429, a 5xx or no an
 PUSH_KEEP_DEAD = 50
 PUSH_HOSTS = ("fcm.googleapis.com", "updates.push.services.mozilla.com")
 PUSH_HOST_SUFFIXES = (".notify.windows.com", ".push.apple.com")
+# Asks: a background session blocked on Dave (agent/dispatch/README.md, "Sessions that wait on Dave").
+ASK_AFTER = 900         # seconds blocked before the ask goes on the card: a session Dave is talking to stays quiet
+ASK_PROJECT = "vps-ops"  # where a card is made when no project's repo matches the session's folder
+ASKS_PER_PASS = 3       # new asks tried per pass
+ASK_RETRY = 60          # seconds before a skipped or failed ask is tried again
+ASK_NEEDS_CLIP = 700
+ASK_EMPTY = "It stopped and asks for your input."
 NUDGE = ("Card {key}: Dave has no answer on the card yet and he reads only the card. Post your answer or "
          "your question as a card comment now with the kanzo tools, and set the card status.")
 
@@ -118,10 +132,10 @@ def clip(text, n):
     return text if len(text) <= n else text[: n - 3] + "..."
 
 
-def scrub(text):
+def scrub(text, n=160):
     """One short line of an error, with anything token-shaped taken out."""
     line = next((ln.strip() for ln in str(text or "").splitlines() if ln.strip()), "no output")
-    return clip(LONG_OPAQUE.sub("[redacted]", line), 160)
+    return clip(LONG_OPAQUE.sub("[redacted]", line), n)
 
 
 def child_env():
@@ -396,6 +410,41 @@ class Board:
         data = self.get("/api/board?project=" + urllib.parse.quote(slug))
         return next((p for p in data.get("projects", []) if p.get("slug") == slug), None)
 
+    def send(self, method, path, body):
+        """A JSON write over the HTTP API (signed `me`, so never for comments)."""
+        req = urllib.request.Request(self.url + path, method=method, data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                raw = r.read()
+                return json.loads(raw) if raw.strip() else None
+        except urllib.error.HTTPError as e:
+            raise BoardError(f"{method} {path}: HTTP {e.code}") from None
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            raise BoardError(f"{method} {path}: {type(e).__name__}") from None
+
+    def projects(self):
+        """Every project with its linked repos. Only read when an ask needs a new card, which is rare."""
+        return self.get("/api/board?project=all").get("projects") or []
+
+    def create_task(self, project, title, description, **fields):
+        """-> the new card's id. `fields` (status, human, tags) go in a PATCH right after."""
+        task = self.send("POST", "/api/tasks", {"project": project, "title": title, "description": description})
+        tid = int(task["id"])
+        if fields:
+            self.send("PATCH", f"/api/tasks/{tid}", fields)
+        return tid
+
+    def clear_inbox(self, task_ids):
+        """Take these cards out of the Inbox (`POST /api/inbox/clear`). Best effort: an older board
+        has no such route, so a 404 or any other error is only logged at debug level."""
+        try:
+            self.send("POST", "/api/inbox/clear", {"tasks": [int(t) for t in task_ids]})
+            return True
+        except BoardError as e:
+            log.debug("inbox clear for %s: %s", task_ids, e)
+            return False
+
     # MCP over streamable HTTP: initialize once, then tools/call. Replies come as SSE.
     def _post(self, payload):
         headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
@@ -451,8 +500,8 @@ class Board:
     def comment(self, task_id, body):
         self.tool("add_comment", {"id": int(task_id), "body": body, "author": self.client})
 
-    def flag_human(self, task_id):
-        self.tool("update_task", {"id": int(task_id), "human": True})
+    def flag_human(self, task_id, on=True):
+        self.tool("update_task", {"id": int(task_id), "human": bool(on)})
 
 
 def highest_comment_id(db_path):
@@ -495,6 +544,17 @@ def live(agent):
     except (OSError, ValueError, TypeError):
         return False
     return True
+
+
+def asking(agent, job):
+    """A background session that stopped and waits on Dave, whether or not its process runs. The
+    job file decides when it has a state: it is read every pass, while the session list may be up
+    to SESSIONS_EVERY old, and a stale `blocked` there next to a fresh updatedAt would look like a
+    new episode."""
+    if not agent or agent.get("kind") != "background":
+        return False
+    js = (job or {}).get("state")
+    return js == "blocked" if js else agent.get("state") == "blocked"
 
 
 def session_state(agent, job):
@@ -914,8 +974,11 @@ class Dispatcher:
     def __init__(self, board, claude, state_path, dev_root, db_path, max_working=3, dry_run=False,
                  deliver_timeout=DELIVER_TIMEOUT, start_grace=START_GRACE, link_wait=LINK_WAIT, herdr=None,
                  status_path=None, interval=5, burst=5, idle_stop=IDLE_STOP, nudge_after=NUDGE_AFTER,
-                 refresh=SESSIONS_EVERY, push=None):
+                 refresh=SESSIONS_EVERY, push=None, asks=True, ask_after=ASK_AFTER, ask_project=ASK_PROJECT):
         self.board, self.claude, self.herdr = board, claude, herdr or Herdr()
+        self.asks_on, self.ask_after, self.ask_project = asks, ask_after, ask_project
+        self.ask_seen = {}              # session id -> when this run first saw it blocked (no updatedAt)
+        self.ask_retry = {}             # session id -> not before: a skipped or failed ask waits ASK_RETRY
         self.state_path, self.dev_root, self.db_path = state_path, dev_root, db_path
         self.max, self.dry = max_working, dry_run
         self.deliver_timeout, self.start_grace, self.link_wait = deliver_timeout, start_grace, link_wait
@@ -1088,6 +1151,7 @@ class Dispatcher:
         self.deliver_pending()
         self.watch()
         self.start_queued()
+        self.asks_pass()
 
     def handle(self, c, data):
         t = data["task"]
@@ -1396,10 +1460,16 @@ class Dispatcher:
             if agent == "unknown" or (agent is None and not card.get("adopted")
                                       and now() - card.get("since", 0) < self.start_grace):
                 continue
+            if card.get("ask") and not alive(agent):
+                self.resume_ask(tid, card)               # it waits on Dave with no process: resume it
+                continue
             if not alive(agent):
                 self.replace(tid, card, "the earlier session was gone")
                 continue
             go, pane, why = self.ready(card, agent)
+            if not go and card.get("ask") and not working(agent):   # a permission or a question: never typed into
+                self.note_waiting(tid, card, "the session waits on a permission or a question; open it in "
+                                             f"the app to answer: {card.get('link') or card.get('short')}")
             if not go and card.get("adopted") and why == "no herdr pane runs it":
                 ok = False                               # nothing to wait for: a failed try
             elif go:
@@ -1452,6 +1522,48 @@ class Dispatcher:
                 card.pop("pending_since", None)
                 self.save()
 
+    def note_waiting(self, tid, card, note):
+        """Say on the waiting receipts why they wait, once: rewriting them every pass would move `rev`."""
+        rec = self.st.get("receipts", {}).get(str(tid), {}).get("comments", {})
+        ids = [cid for cid in card.get("pending") or [] if rec.get(str(cid), {}).get("note") != clip(note, 200)]
+        if ids and not self.dry:
+            self.receipt(tid, ids, "waiting", note)
+
+    def resume_ask(self, tid, card):
+        """Dave answered on an ask card and the session has no process: `claude --bg --resume` it with
+        his comments, as resume() does for a dispatcher session, with the same follow-up line. No card
+        comment: the receipt says delivered, and a dispatcher comment on a card flagged for Dave would
+        put it back in his Inbox and push his phone about his own answer."""
+        data = self.board.task(tid)
+        if not data:
+            return
+        ids = list(card.get("pending") or [])
+        comments = [c for c in data["comments"] if c["id"] in ids]
+        if self.dry:
+            log.info("dry run: would resume %s with %d comment(s) on %s", card.get("short"), len(comments), card["key"])
+            return
+        card.pop("pending_since", None)
+        if not comments:
+            card["pending"] = []
+            self.save()
+            return
+        text = follow_up(card["key"], comments, data["task"].get("title") if card.get("adopted") else None,
+                         data.get("images"))
+        card.update(status="starting", pending=[])        # on disk before claude runs: a crash never resends
+        self.save()
+        short, err = self.claude.start(card.get("cwd") or self.dev_root, card["name"], text, card["session_id"])
+        if err:
+            log.warning("could not resume %s for %s (%s)", card.get("short"), card["key"], err)
+            card.update(status="attached", pending=ids, pending_since=now())
+            self.replace(tid, card, f"the waiting session could not be resumed: {err}")
+            return
+        link = self.claude.session_and_link(short, 0)[1]
+        card.update(status="attached", short=short, link=link or card.get("link"), since=now(), updated=False,
+                    warned=False, failures=0, wait={"comment": max(c["id"] for c in comments), "at": now(),
+                                                    "nudged": False})
+        self.carried(tid, data, [c["id"] for c in comments], "delivered", f"resumed session {short}")
+        log.info("resumed waiting session %s for %s", short, card["key"])
+
     def watch(self):
         for tid, card in list(self.st["cards"].items()):
             if card.get("status") != "attached":
@@ -1459,6 +1571,10 @@ class Dispatcher:
             agent = self.claude.find(card)
             if agent == "unknown":
                 continue
+            if card.get("ask"):                          # waits on Dave: the asks pass has it, never a nudge
+                continue
+            if self.asks_on and agent and not alive(agent) and asking(agent, self.claude.job(card.get("short"))):
+                continue                                 # no process, blocked: an ask comes, keep the card
             if card.get("adopted"):                      # not started for this card: only the nudge
                 if not alive(agent) and not card.get("pending"):
                     self.st["cards"].pop(tid, None)
@@ -1498,6 +1614,8 @@ class Dispatcher:
         wait = card.get("wait")
         if not wait or card.get("pending") or blocked(agent):
             return False
+        if card.get("short") and asking(agent, self.claude.job(card["short"])):
+            return False                                 # its job file says it waits on Dave: never typed into
         if now() - wait["at"] < self.nudge_after:
             return True
         go, pane, _ = self.ready(card, agent)
@@ -1533,6 +1651,217 @@ class Dispatcher:
                 self.start(item["task"], item["comment"], item.get("why") or "from the queue",
                            item.get("fresh", False), [item["comment"], *item.get("also", [])])
 
+    # asks: a background session that waits on Dave (agent/dispatch/README.md, "Sessions that wait on Dave")
+    def listing(self):
+        """The session list read this pass, else a fresh one at most every `refresh` seconds, else the
+        last one read. None when there is none: the caller must not treat sessions as gone."""
+        claude = self.claude
+        if claude._agents is not None:
+            return claude._agents
+        if now() - claude.listed_at >= self.refresh:
+            return claude.agents(fresh=True) or claude.listed
+        return claude.listed
+
+    def asks_pass(self):
+        """Every pass: end the episodes that are over, then ask for the sessions blocked long enough.
+        An episode is (session id, the job's updatedAt); it gets one comment, never two."""
+        if not self.asks_on or self.st is None:
+            return
+        listed = self.listing()
+        if listed is None:
+            return
+        asks, t = self.st.setdefault("asks", {}), now()
+        waiting = {}
+        for a in listed:
+            sid = a.get("sessionId")
+            if not sid or a.get("kind") != "background":
+                continue
+            short = a.get("id") or sid[:8]
+            job = self.claude.job(short)
+            if asking(a, job):
+                waiting[sid] = (a, job, short)
+        for sid in list(asks):
+            if sid not in waiting:
+                self.end_ask(sid)
+        self.ask_seen = {sid: self.ask_seen.get(sid, t) for sid in waiting}
+        self.ask_retry = {sid: at for sid, at in self.ask_retry.items() if sid in waiting and at > t}
+        tried = 0
+        for sid, (a, job, short) in sorted(waiting.items(), key=lambda x: self.ask_since(x[0], x[1][1])):
+            since, entry = self.ask_since(sid, job), asks.get(sid)
+            if entry and (entry.get("since") == since or not job.get("updatedAt")):
+                continue                                 # this episode was asked already
+            if t - since < self.ask_after or self.ask_retry.get(sid, 0) > t:
+                continue
+            if tried >= ASKS_PER_PASS:
+                break
+            tried += 1
+            self.ask_retry[sid] = t + ASK_RETRY          # cleared by success; a skip or failure waits
+            try:
+                self.ask(sid, a, job, short, since, entry)
+            except (BoardError, KeyError, TypeError, ValueError) as e:   # never the loop's problem
+                log.warning("ask for session %s not posted: %s", short, e)
+        self.forget_ask_cards()
+
+    def ask_since(self, sid, job):
+        """When the episode began: the job's updatedAt, else when this run first saw it blocked."""
+        return stamp(job.get("updatedAt")) if job.get("updatedAt") else self.ask_seen.get(sid, now())
+
+    def project_for(self, cwd, projects):
+        """The reverse of folder(): a cwd inside <dev_root>/<dir> (a worktree under it too) maps to the
+        project that links a repo named <dir>."""
+        try:
+            rel = os.path.relpath(os.path.abspath(cwd), self.dev_root) if cwd else ".."
+        except ValueError:
+            return None
+        top = rel.split(os.sep)[0]
+        if top in ("", ".", ".."):
+            return None
+        hits = [p for p in projects if any(str(r).split("/")[-1] == top for r in p.get("repos") or [])]
+        best = next((p for p in hits if p.get("slug") == top), hits[0] if hits else None)
+        return best.get("slug") if best else None
+
+    def ask_card(self, sid, short, name, cwd, link):
+        """-> (task id, created) or (None, False). Order: the card the dispatcher holds for the session;
+        the card of its earlier ask; the open card it last wrote to through Kanzo; a new card in the
+        project of its folder, else in --ask-project."""
+        st = self.st
+        held = next((t for t, c in st["cards"].items() if c.get("session_id") == sid), None)
+        if held:
+            return held, False
+        prev = st.get("ask_cards", {}).get(sid) or {}
+        writes = self.claude.transcripts.writes(sid)[0]
+        order = ([str(prev["task"])] if prev.get("task") else []) + [
+            str(n) for n, _ in sorted(writes.items(), key=lambda x: (-x[1], -x[0]))]
+        done = self.done_cards([int(x) for x in order])
+        queued = {q["task"] for q in st["queue"]}
+        for tid in list(dict.fromkeys(order))[:10]:
+            other = st["cards"].get(tid)
+            if (int(tid) in done or tid in queued or (other and other.get("session_id") != sid)
+                    or sid in st.get("detached", {}).get(tid, [])):
+                continue
+            data = self.board.task(tid)
+            if data and data["task"].get("status") != "done":
+                return tid, bool(prev.get("created")) and str(prev.get("task")) == tid
+        projects = self.board.projects()
+        slug = self.project_for(cwd, projects)
+        if not slug and not any(p.get("slug") == self.ask_project for p in projects):
+            log.warning("ask for session %s skipped: no project for %s and the fallback project %s does not "
+                        "exist (--ask-project)", short, cwd or "its folder", self.ask_project)
+            return None, False
+        slug = slug or self.ask_project
+        if self.dry:
+            log.info("dry run: would make a card in %s for session %s", slug, short)
+            return None, False
+        desc = (f"Claude session `{name}` (id {short}) stopped and waits on Dave.\n\n"
+                f"Folder: {cwd or 'unknown'}\nApp: {link or 'none'}\n\n"
+                f"kanzo-dispatch made this card for it. Answer in a comment and it goes to that session.")
+        tid = str(self.board.create_task(slug, clip(f"Answer: {' '.join(name.split())}", 80), desc,
+                                         status="doing", human=True, tags="agent,ask"))
+        st.setdefault("ask_cards", {})[sid] = {"task": tid, "created": True, "at": now()}
+        self.save()
+        log.info("made card #%s in %s for waiting session %s", tid, slug, short)
+        return tid, True
+
+    def ask(self, sid, agent, job, short, since, entry):
+        """Post the ask on the session's card, set human, and route the card to the session."""
+        name = " ".join(str(agent.get("name") or job.get("name") or short).split())
+        cwd = agent.get("cwd") or job.get("cwd") or ""
+        link = remote_url(job.get("bridgeSessionId"))
+        tid, created = self.ask_card(sid, short, name, cwd, link)
+        if tid is None:
+            return
+        needs = scrub(job.get("needs"), ASK_NEEDS_CLIP) if str(job.get("needs") or "").strip() else ASK_EMPTY
+        body = f"**{name} waits on you.**\n\n{needs}\n\n"
+        if str(job.get("suggestedReply") or "").strip():
+            body += f"Suggested reply: {scrub(job['suggestedReply'], ASK_NEEDS_CLIP)}\n\n"
+        body += "Answer in a comment here and it goes to that session." + (f" [Open in Claude]({link})" if link else "")
+        if self.dry:
+            log.info("dry run: would ask on #%s for session %s: %s", tid, short, clip(needs, 120))
+            return
+        data = self.board.task(tid)
+        if not data:
+            return
+        asks = self.st.setdefault("asks", {})
+        flagged = created or bool(entry and entry.get("flagged") and data["task"].get("human"))
+        asks[sid] = {"task": tid, "comment": None, "since": since, "at": now(), "flagged": flagged,
+                     "created": created or bool(entry and entry.get("created"))}
+        self.save()                                      # on disk before the comment: never two for one episode
+        try:
+            self.board.comment(tid, body)
+        except BoardError:
+            if entry:
+                asks[sid] = entry
+            else:
+                asks.pop(sid, None)
+            self.save()
+            raise
+        self.ask_retry.pop(sid, None)
+        if not data["task"].get("human"):
+            try:
+                self.board.flag_human(tid)
+                asks[sid]["flagged"] = True
+            except BoardError as e:
+                log.error("could not set human on card #%s: %s", tid, e)
+        # Routing: the card is attached to the session as an adopted one. The dispatcher did not start
+        # it, so `@claude stop` only detaches it, it stays outside the --max cap and the idle stop, and
+        # a failed delivery is counted like any adopted session's; `ask` adds the one exception, a
+        # resume when its process is gone (deliver_pending). A card already held for the session keeps
+        # its entry and only gets `ask`.
+        card = self.st["cards"].get(tid)
+        if card is None:
+            card = self.st["cards"][tid] = {
+                "key": card_key(data["task"]), "name": name, "cwd": cwd, "status": "attached", "short": short,
+                "session_id": sid, "adopted": True, "kind": "background", "since": now(), "updated": False,
+                "warned": False, "pending": [], "failures": 0, "link": link}
+        card["ask"] = True
+        after = self.board.task(tid) or {"comments": []}  # add_comment does not return the comment's id
+        asks[sid]["comment"] = max((c["id"] for c in after["comments"] if c["author"] == AUTHOR), default=None)
+        rec = self.st.setdefault("ask_cards", {}).setdefault(sid, {"task": tid, "created": created})
+        rec.update(task=tid, at=now())
+        self.save()
+        log.info("asked on #%s for waiting session %s", tid, short)
+
+    def end_ask(self, sid):
+        """The session no longer waits: drop the episode, take the human flag off when the dispatcher
+        set it, and take the card out of the Inbox. A real agent answer Dave has not seen stays put."""
+        entry = self.st["asks"][sid]
+        tid = str(entry.get("task"))
+        if self.dry:
+            log.info("dry run: would end the ask on #%s", tid)
+            return
+        try:
+            data = self.board.task(tid)
+        except BoardError as e:
+            log.warning("ask on #%s not ended yet: %s", tid, e)
+            return                                       # the next pass tries again
+        del self.st["asks"][sid]
+        card = self.st["cards"].get(tid)
+        if card and card.get("session_id") == sid:
+            card.pop("ask", None)
+        self.save()
+        if not data:
+            return
+        last = max(data["comments"], key=lambda c: c["id"], default=None)
+        if last and last["author"] not in (DAVE, AUTHOR):
+            log.info("ask on #%s ended; an agent answered last, so the card stays in the Inbox", tid)
+            return
+        if entry.get("flagged") and data["task"].get("human") and data["task"].get("status") != "done":
+            try:
+                self.board.flag_human(tid, False)
+            except BoardError as e:
+                log.error("could not clear human on card #%s: %s", tid, e)
+        self.board.clear_inbox([tid])
+        log.info("ask on #%s ended", tid)
+
+    def forget_ask_cards(self):
+        """Drop the remembered ask card of a session not seen asking for KEEP_FOR."""
+        cards, open_ = self.st.get("ask_cards", {}), self.st.get("asks", {})
+        old = [sid for sid, r in cards.items() if sid not in open_ and r.get("at", 0) < now() - KEEP_FOR]
+        for sid in old:
+            del cards[sid]
+        if old:
+            self.save()
+
     # status.json: what the board shows (the contract is agent/dispatch/README.md, "What the board shows")
     def publish(self):
         """Every pass, as a heartbeat; `rev` moves only when something besides `updated` did."""
@@ -1549,29 +1878,33 @@ class Dispatcher:
 
     def status(self):
         st, claude = self.st, self.claude
-        listed = claude._agents                          # already read this pass: free
-        if listed is None:                               # else at most every `refresh` seconds
-            listed = (claude.agents(fresh=True) if now() - claude.listed_at >= self.refresh else None) or claude.listed
-        agents = sorted((a for a in listed or [] if a.get("sessionId") and live(a)),
+        listed = self.listing()                          # read this pass already, else at most every `refresh` s
+        agents = sorted((a for a in listed or [] if a.get("sessionId")),
                         key=lambda a: (a.get("startedAt") or 0, a["sessionId"]))
         mine = {c["session_id"]: c for c in st["cards"].values() if c.get("session_id")}
         detached = st.get("detached", {})
-        budget, sessions, best = SCAN_BUDGET, {}, {}
+        budget, sessions, best, needs = SCAN_BUDGET, {}, {}, {}
         for a in agents:
             sid = a["sessionId"]
             short = a.get("id") or sid[:8]
             job, card = claude.job(short), mine.get(sid)
-            writes, used = claude.transcripts.writes(sid, budget)
-            budget = max(budget - used, 0)
-            for n, at in writes.items():                 # latest writer wins, a detached one never
-                if at > best.get(str(n), (0,))[0] and sid not in detached.get(str(n), []):
-                    best[str(n)] = (at, sid)
+            waits = self.asks_on and asking(a, job)      # listed even with no process: it waits on Dave
+            if not live(a) and not waits:
+                continue
+            if live(a):                                  # an exited session owns only its ask card
+                writes, used = claude.transcripts.writes(sid, budget)
+                budget = max(budget - used, 0)
+                for n, at in writes.items():             # latest writer wins, a detached one never
+                    if at > best.get(str(n), (0,))[0] and sid not in detached.get(str(n), []):
+                        best[str(n)] = (at, sid)
+            if waits and str(job.get("needs") or "").strip():
+                needs[sid] = job["needs"]
             tokens = job.get("tokens")
             sessions[sid] = {
                 "id": short, "session_id": sid, "name": a.get("name") or job.get("name") or "",
                 "kind": "interactive" if a.get("kind") == "interactive" else "background",
-                "state": session_state(a, job),
-                "detail": clip(" ".join(str(job.get("detail") or "").split()), 160),
+                "state": "blocked" if waits else session_state(a, job),
+                "detail": scrub(needs[sid], 160) if sid in needs else clip(" ".join(str(job.get("detail") or "").split()), 160),
                 "folder": a.get("cwd") or "",
                 "started": iso(a["startedAt"] / 1000) if isinstance(a.get("startedAt"), (int, float)) else "",
                 "tokens": tokens if isinstance(tokens, int) and not isinstance(tokens, bool) else None,
@@ -1586,6 +1919,9 @@ class Dispatcher:
                 owner.pop(t, None)
             elif c.get("session_id") in sessions:
                 owner[t] = c["session_id"]
+        asked = {str(e.get("task")): sid for sid, e in st.get("asks", {}).items()
+                 if self.asks_on and sid in sessions and sessions[sid]["state"] == "blocked"}
+        owner.update(asked)                              # the ask's card belongs to the waiting session
         for t, sid in sorted(owner.items(), key=lambda x: int(x[0])):
             sessions[sid]["cards"].append(int(t))
         current = {}                                     # a session works on one card: its latest write
@@ -1603,8 +1939,11 @@ class Dispatcher:
         cards = {}
         for t in set(owner) | queued | set(st["cards"]) | set(recs):
             c, rec, sid = st["cards"].get(t) or {}, recs.get(t, {}), owner.get(t)
-            sticky = rec.get("state")
-            if t in queued:
+            sticky, note = rec.get("state"), None
+            if t in asked:
+                state = "blocked"
+                note = scrub(needs[asked[t]], 200) if asked[t] in needs else ASK_EMPTY
+            elif t in queued:
                 state = "queued"
             elif c.get("status") == "starting":
                 state = "starting"
@@ -1620,13 +1959,16 @@ class Dispatcher:
             if not seen or seen[0] != state:
                 seen = self.since[t] = (state, now())
             cards[t] = {"session": sessions[sid]["id"] if sid else "", "origin": sessions[sid]["origin"] if sid else "",
-                        "state": state, "since": iso(seen[1]), "note": rec.get("note", "") if state == sticky else "",
+                        "state": state, "since": iso(seen[1]),
+                        "note": note if note is not None else rec.get("note", "") if state == sticky else "",
                         "comments": {i: {"state": r["state"], "at": iso(r["at"]), "note": r.get("note", "")}
                                      for i, r in rec.get("comments", {}).items()}}
         self.since = {t: v for t, v in self.since.items() if t in cards}
         push = self.push.status() if self.push else {"on": False, "subscriptions": 0, "last_sent": "", "last_error": ""}
         return {"interval": self.interval, "max": self.max, "sessions": list(sessions.values()), "cards": cards,
                 "push_key": self.push.public if self.push else "", "push": push,
+                "asks": {"on": bool(self.asks_on),
+                         "open": sum(1 for e in st.get("asks", {}).values() if e.get("at")) if self.asks_on else 0},
                 "queue": [{"task": int(q["task"]), "comment": q["comment"], "at": iso(q.setdefault("at", now()))}
                           for q in st["queue"]]}
 
@@ -1674,6 +2016,11 @@ def main(argv=None):
     p.add_argument("--idle-stop", type=float, default=IDLE_STOP,
                    help="stop a dispatcher session idle this many seconds on a done card (default 3600, 0 off)")
     p.add_argument("--no-push", action="store_true", help=f"send no Web Push, even with {PUSH_KEY_ENV} set")
+    p.add_argument("--no-asks", action="store_true", help="do not put a waiting background session's ask on a card")
+    p.add_argument("--ask-after", type=float, default=ASK_AFTER,
+                   help=f"seconds a background session waits on Dave before the ask goes on a card (default {ASK_AFTER})")
+    p.add_argument("--ask-project", default=ASK_PROJECT,
+                   help=f"project for a new ask card when no project's repo matches the folder (default {ASK_PROJECT})")
     a = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     push = Push(raw_key, a.db, off="--no-push" if a.no_push else None)
@@ -1681,7 +2028,8 @@ def main(argv=None):
     d = Dispatcher(Board(a.board), Claude(a.claude), a.state, os.path.abspath(a.dev_root), a.db,
                    max_working=a.max, dry_run=a.dry_run, herdr=Herdr(a.herdr), status_path=a.status,
                    interval=int(a.interval) if a.interval == int(a.interval) else a.interval,
-                   burst=a.burst, idle_stop=a.idle_stop, push=push)
+                   burst=a.burst, idle_stop=a.idle_stop, push=push, asks=not a.no_asks, ask_after=a.ask_after,
+                   ask_project=a.ask_project)
     while True:
         try:
             d.tick()
