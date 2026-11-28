@@ -1527,6 +1527,24 @@ class Push(Base):
         for path in (self.state, pathlib.Path(self.state).with_name("status.json")):
             self.assertNotIn("fake1", pathlib.Path(path).read_text(), "an endpoint never leaves the database")
 
+    def test_phones_are_counted_and_the_last_result_survives_a_restart(self):
+        http("POST", "/api/push/subscribe", {"endpoint": "https://fcm.googleapis.com/fcm/send/fake7",
+                                             "keys": {"p256dh": "BFake", "auth": "fake"}, "label": "Chrome on Android"})
+        http("POST", "/api/push/subscribe", {"endpoint": "https://fcm.googleapis.com/fcm/send/fake8",
+                                             "keys": {"p256dh": "BFake", "auth": "fake"}, "label": "Chrome on Mac"})
+        self.answer()
+        self.d.tick()
+        st = self.status()["push"]
+        self.assertEqual((st["subscriptions"], st["phones"], st["last_error"]), (3, 1, ""))
+        sent = st["last_sent"]
+        self.assertTrue(sent)
+        p = kd.Push(self.key, os.path.join(self.kanzo_home, "kanzo.db"), post=self.fake_push.post, threaded=False)
+        self.dispatcher(push=p).tick()                   # a restart: nothing new to send
+        again = self.status()["push"]
+        self.assertEqual((again["last_sent"], again["phones"]), (sent, 1))
+        for n in (7, 8):                                 # the board is shared with the other tests
+            http("POST", "/api/push/unsubscribe", {"endpoint": f"https://fcm.googleapis.com/fcm/send/fake{n}"})
+
     def test_two_answers_in_one_pass_send_one_push(self):
         self.answer("One")
         self.answer("Two")

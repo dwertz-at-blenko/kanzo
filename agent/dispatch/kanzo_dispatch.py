@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Version: v7 · created 2026-11-21 13:26 EST · updated 2026-11-28 15:19 EST
+# Version: v8 · created 2026-11-21 13:26 EST · updated 2026-11-28 16:09 EST
 # Changes: v1 watch the board for Dave's @claude comments and run one background Claude session per card.
 #          v2 2026-11-23 any comment by Dave starts or reaches the session; "[note]" comments are skipped.
 #          v3 2026-11-23 a comment goes to the live session already working the card (background or a
@@ -17,6 +17,9 @@
 #          v7 2026-11-28 a waiting background session with a process is typed into (it shows no dialog:
 #             measured, a background session runs in don't-ask mode); no ask comment when the agent's own
 #             question already has the card in the Inbox; one dispatcher per state file (only_one).
+#          v8 2026-11-28 status.json `push.phones` (subscribed browsers whose label says Android or iOS);
+#             the last push result survives a restart (`push_last` in state.json). The Slack fallback
+#             reads both: it stays on until a phone is subscribed and the last push was accepted.
 # This file: /home/claude/dev/kanzo/agent/dispatch/kanzo_dispatch.py (repo dwertz-at-blenko/kanzo, branch public-url)
 # Session: b1475961-06d7-40b0-9eff-f2b47896b6bb · vps as claude · cwd /home/claude/dev
 """kanzo-dispatch: delegate a card to Claude by commenting on it.
@@ -112,6 +115,7 @@ PUSH_TIMEOUT = 10
 PUSH_JWT_FOR = 12 * 3600
 PUSH_BACKOFF = (60, 3600)   # first and longest wait after a 429, a 5xx or no answer
 PUSH_KEEP_DEAD = 50
+PUSH_PHONE = re.compile(r"\b(Android|iOS)\b")   # deviceLabel() in the page: "Chrome on Android"
 PUSH_HOSTS = ("fcm.googleapis.com", "updates.push.services.mozilla.com")
 PUSH_HOST_SUFFIXES = (".notify.windows.com", ".push.apple.com")
 # Asks: a background session blocked on Dave (agent/dispatch/README.md, "Sessions that wait on Dave").
@@ -218,6 +222,7 @@ class Push:
         self.dead = []                  # hashes of endpoints that answered 404 or 410
         self.tokens = {}                # origin -> (JWT, exp)
         self.count, self.last_round, self.last_sent, self.last_error = 0, 0, 0, ""
+        self.phones = self.found_phones = 0     # subscribed browsers on a phone, by the label the page sent
         self.lock = threading.Lock()
         self.thread = None
         if off:
@@ -258,11 +263,13 @@ class Push:
         except (sqlite3.Error, ValueError, TypeError):
             self.last_error = "cannot read the subscriptions from the board's database"
             return []
-        out = []
+        out, phones = [], 0
         for sub in subs if isinstance(subs, list) else []:
             endpoint = sub.get("endpoint") if isinstance(sub, dict) else None
             if self.allowed(endpoint) and digest(endpoint) not in self.dead:
                 out.append((digest(endpoint), endpoint))
+                phones += bool(PUSH_PHONE.search(str(sub.get("label") or "")))
+        self.found_phones = phones
         return out
 
     def token(self, origin, t):
@@ -289,7 +296,7 @@ class Push:
             return
         subs = self.subscriptions()
         with self.lock:
-            self.count = len(subs)
+            self.count, self.phones = len(subs), self.found_phones
             live = {h for h, _ in subs}
             if news:
                 for h in live:
@@ -355,6 +362,7 @@ class Push:
     def status(self):
         with self.lock:
             return {"on": self.on, "subscriptions": self.count if self.on else 0,
+                    "phones": self.phones if self.on else 0,
                     "last_sent": iso(self.last_sent) if self.last_sent else "", "last_error": self.last_error}
 
 
@@ -998,6 +1006,8 @@ class Dispatcher:
         self.push = push
         if push and self.st:
             push.dead = list(self.st.get("push_dead", []))[-PUSH_KEEP_DEAD:]
+            last = self.st.get("push_last") or [0, ""]  # the last result outlives a restart
+            push.last_sent, push.last_error = float(last[0] or 0), str(last[1] or "")
         try:                            # carry rev and each card's `since` over a restart
             with open(self.status_path) as f:
                 old = json.load(f)
@@ -1101,9 +1111,9 @@ class Dispatcher:
         try:
             self.push.check(self.board.get("/api/inbox"), dry=self.dry)
             with self.push.lock:
-                dead = list(self.push.dead)
-            if dead != self.st.get("push_dead", []):
-                self.st["push_dead"] = dead
+                dead, last = list(self.push.dead), [self.push.last_sent, self.push.last_error]
+            if dead != self.st.get("push_dead", []) or last != self.st.get("push_last", [0, ""]):
+                self.st["push_dead"], self.st["push_last"] = dead, last
                 self.save()
         except BoardError:
             pass                                         # the pass reports the board itself
