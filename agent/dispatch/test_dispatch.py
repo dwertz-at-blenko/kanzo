@@ -180,6 +180,7 @@ class Base(unittest.TestCase):
     def dispatcher(self, **kw):
         kw.setdefault("start_grace", 0)
         kw.setdefault("refresh", 0)                      # status.json reads the session list every pass
+        kw.setdefault("ask_after", 120)                  # the tests block a session 300 s ago
         claude = kd.Claude(self.fake, home=self.fake_dir, sock=os.path.join(self.fake_dir, "tmux.sock"))
         return kd.Dispatcher(kd.Board(URL), claude, self.state, self.dev, os.path.join(self.kanzo_home, "kanzo.db"),
                              link_wait=1, herdr=kd.Herdr(self.fake_herdr), **kw)
@@ -1210,7 +1211,10 @@ class Asks(Base):
         self.assertNotIn("ask", self.d.st["cards"].get(str(mine_flag), {}))
 
     def test_inbox_cleared_at_the_end_and_a_404_is_fine(self):
-        self.assertFalse(kd.Board(URL).clear_inbox([1]))  # the route is not on this board: no exception
+        self.assertTrue(kd.Board(URL).clear_inbox([1]))    # the real route takes it
+        old = kd.Board(URL)
+        old.send = lambda *a, **k: (_ for _ in ()).throw(kd.BoardError("404 Not Found"))
+        self.assertFalse(old.clear_inbox([1]))             # a board without the route: no exception
         tid = self.card()
         cleared = self.record_clears()
         self.waiting("0a50000b", calls=self.wrote(tid))

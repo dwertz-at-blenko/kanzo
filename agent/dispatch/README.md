@@ -48,7 +48,8 @@ A background session that ends its turn needing Dave is listed by `claude agents
 `needs` (one line), `updatedAt` and sometimes `suggestedReply`. The dispatcher puts that on the board:
 
 1. Episode: (session id, `updatedAt`). One ask per episode, once it has been blocked `--ask-after`
-   seconds (120; from `updatedAt`, else from when the dispatcher first saw it). The job file's state
+   seconds (900, so a session Dave is answering in the app does not ping him between turns; from
+   `updatedAt`, else from when the dispatcher first saw it). The job file's state
    decides when it has one, since the session list is read at most every 15 s.
 2. The card, in this order: the card the dispatcher holds for the session; the card of the
    session's earlier ask; the open card the session last wrote to through Kanzo; else a new card
@@ -217,7 +218,7 @@ inbox and shows "Kanzo: an agent answered"; a tap opens the Inbox, which asks fo
     agent/dispatch/kanzo_dispatch.py --loop --interval 5
     agent/dispatch/kanzo_dispatch.py --loop --burst 5 --idle-stop 3600   # the defaults
     agent/dispatch/kanzo_dispatch.py --loop --no-push   # no Web Push even with the key set
-    agent/dispatch/kanzo_dispatch.py --loop --ask-after 120 --ask-project vps-ops   # the asks defaults
+    agent/dispatch/kanzo_dispatch.py --loop --ask-after 900 --ask-project vps-ops   # the asks defaults
     agent/dispatch/kanzo_dispatch.py --loop --no-asks   # leave waiting sessions off the board
     python3 agent/dispatch/test_dispatch.py             # throwaway board on 127.0.0.1:8198, fake claude, herdr and push service
     KANZO_TEST_PORT=8196 python3 -W error::ResourceWarning agent/dispatch/test_dispatch.py   # another port

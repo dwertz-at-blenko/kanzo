@@ -111,7 +111,7 @@ PUSH_KEEP_DEAD = 50
 PUSH_HOSTS = ("fcm.googleapis.com", "updates.push.services.mozilla.com")
 PUSH_HOST_SUFFIXES = (".notify.windows.com", ".push.apple.com")
 # Asks: a background session blocked on Dave (agent/dispatch/README.md, "Sessions that wait on Dave").
-ASK_AFTER = 120         # seconds blocked before the ask goes on the card
+ASK_AFTER = 900         # seconds blocked before the ask goes on the card: a session Dave is talking to stays quiet
 ASK_PROJECT = "vps-ops"  # where a card is made when no project's repo matches the session's folder
 ASKS_PER_PASS = 3       # new asks tried per pass
 ASK_RETRY = 60          # seconds before a skipped or failed ask is tried again
@@ -436,8 +436,8 @@ class Board:
         return tid
 
     def clear_inbox(self, task_ids):
-        """Take these cards out of the Inbox (`POST /api/inbox/clear`). Best effort: the route ships
-        in a separate change, so a 404 or any other error is only logged at debug level."""
+        """Take these cards out of the Inbox (`POST /api/inbox/clear`). Best effort: an older board
+        has no such route, so a 404 or any other error is only logged at debug level."""
         try:
             self.send("POST", "/api/inbox/clear", {"tasks": [int(t) for t in task_ids]})
             return True
