@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Version: v6 · created 2026-11-21 13:26 EST · updated 2026-11-28
+# Version: v7 · created 2026-11-21 13:26 EST · updated 2026-11-28 15:19 EST
 # Changes: v1 watch the board for Dave's @claude comments and run one background Claude session per card.
 #          v2 2026-11-23 any comment by Dave starts or reaches the session; "[note]" comments are skipped.
 #          v3 2026-11-23 a comment goes to the live session already working the card (background or a
@@ -14,6 +14,9 @@
 #             (found or made), the human flag, and routing, so his answer on the card resumes or reaches it;
 #             `asks` in state.json and status.json, blocked sessions listed even with no process,
 #             --ask-after, --ask-project, --no-asks, Board.clear_inbox.
+#          v7 2026-11-28 a waiting background session with a process is typed into (it shows no dialog:
+#             measured, a background session runs in don't-ask mode); no ask comment when the agent's own
+#             question already has the card in the Inbox; one dispatcher per state file (only_one).
 # This file: /home/claude/dev/kanzo/agent/dispatch/kanzo_dispatch.py (repo dwertz-at-blenko/kanzo, branch public-url)
 # Session: b1475961-06d7-40b0-9eff-f2b47896b6bb · vps as claude · cwd /home/claude/dev
 """kanzo-dispatch: delegate a card to Claude by commenting on it.
@@ -116,6 +119,7 @@ ASK_AFTER = 900         # seconds blocked before the ask goes on the card: a ses
 ASK_PROJECT = "vps-ops"  # where a card is made when no project's repo matches the session's folder
 ASKS_PER_PASS = 3       # new asks tried per pass
 ASK_RETRY = 60          # seconds before a skipped or failed ask is tried again
+ASK_SAID = 1800         # the agent's own question on the card counts when it is at most this old at the stop
 ASK_NEEDS_CLIP = 700
 ASK_EMPTY = "It stopped and asks for your input."
 NUDGE = ("Card {key}: Dave has no answer on the card yet and he reads only the card. Post your answer or "
@@ -529,9 +533,11 @@ def blocked(agent):
 
 
 def deliverable(agent):
-    """An idle background session with its input box free (not on a permission or question)."""
-    return (alive(agent) and agent.get("kind") == "background" and agent.get("status") == "idle"
-            and agent.get("state") != "blocked")
+    """An idle background session: its turn ended and its input box is free. That holds when it is
+    listed `blocked` too. Measured 2026-11-28: a background session runs in don't-ask mode, so a
+    permission or a question is denied in the turn and no dialog is ever shown; `blocked` next to
+    `idle` means its last line asked Dave for something. Any other status is left alone."""
+    return alive(agent) and agent.get("kind") == "background" and agent.get("status") == "idle"
 
 
 def live(agent):
@@ -1468,7 +1474,7 @@ class Dispatcher:
                 self.replace(tid, card, "the earlier session was gone")
                 continue
             go, pane, why = self.ready(card, agent)
-            if not go and card.get("ask") and not working(agent):   # a permission or a question: never typed into
+            if not go and card.get("ask") and not working(agent):   # neither idle nor working: never typed into
                 self.note_waiting(tid, card, "the session waits on a permission or a question; open it in "
                                              f"the app to answer: {card.get('link') or card.get('short')}")
             if not go and card.get("adopted") and why == "no herdr pane runs it":
@@ -1787,17 +1793,24 @@ class Dispatcher:
         asks[sid] = {"task": tid, "comment": None, "since": since, "at": now(), "flagged": flagged,
                      "created": created or bool(entry and entry.get("created"))}
         self.save()                                      # on disk before the comment: never two for one episode
-        try:
-            self.board.comment(tid, body)
-        except BoardError:
-            if entry:
-                asks[sid] = entry
-            else:
-                asks.pop(sid, None)
-            self.save()
-            raise
+        # The agent asked on the card itself, and that has the card in Dave's Inbox: a second comment
+        # with the same question is noise. The card is still routed to the session below.
+        last = max(data["comments"], key=lambda c: c["id"], default=None)
+        said = bool(not created and last and last["author"] not in (DAVE, AUTHOR)
+                    and stamp(last.get("created_at")) >= since - ASK_SAID
+                    and (data["task"].get("human") or data["task"].get("status") == "review"))
+        if not said:
+            try:
+                self.board.comment(tid, body)
+            except BoardError:
+                if entry:
+                    asks[sid] = entry
+                else:
+                    asks.pop(sid, None)
+                self.save()
+                raise
         self.ask_retry.pop(sid, None)
-        if not data["task"].get("human"):
+        if not said and not data["task"].get("human"):
             try:
                 self.board.flag_human(tid)
                 asks[sid]["flagged"] = True
@@ -1815,12 +1828,13 @@ class Dispatcher:
                 "session_id": sid, "adopted": True, "kind": "background", "since": now(), "updated": False,
                 "warned": False, "pending": [], "failures": 0, "link": link}
         card["ask"] = True
-        after = self.board.task(tid) or {"comments": []}  # add_comment does not return the comment's id
-        asks[sid]["comment"] = max((c["id"] for c in after["comments"] if c["author"] == AUTHOR), default=None)
+        if not said:
+            after = self.board.task(tid) or {"comments": []}  # add_comment does not return the comment's id
+            asks[sid]["comment"] = max((c["id"] for c in after["comments"] if c["author"] == AUTHOR), default=None)
         rec = self.st.setdefault("ask_cards", {}).setdefault(sid, {"task": tid, "created": created})
         rec.update(task=tid, at=now())
         self.save()
-        log.info("asked on #%s for waiting session %s", tid, short)
+        log.info("%s #%s for waiting session %s", "its own question is on" if said else "asked on", tid, short)
 
     def end_ask(self, sid):
         """The session no longer waits: drop the episode, take the human flag off when the dispatcher

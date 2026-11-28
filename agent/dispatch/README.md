@@ -67,10 +67,15 @@ A background session that ends its turn needing Dave is listed by `claude agents
        Answer in a comment here and it goes to that session. [Open in Claude](<link>)
 
 4. The card is attached to the session like an adopted one (never stopped, outside `--max`, `@claude
-   stop` only detaches). Dave's comment there goes to it: typed in when its process is idle with the
-   input box free; `claude --bg --resume <session id> <follow-up>` when it has no process (receipt
-   `delivered`, no card comment); never typed into a permission prompt or a question dialog (receipt
-   `waiting`, its note says to open the app). A blocked session is never nudged.
+   stop` only detaches). Dave's comment there goes to it: typed in when its process is idle
+   (measured 2026-11-28: a background session runs in don't-ask mode and shows no dialog, so `idle`
+   and `blocked` together mean its turn ended on a question for Dave and the input box is free);
+   `claude --bg --resume <session id> <follow-up>` when it has no process (receipt `delivered`, no
+   card comment); never typed into in any other status (receipt `waiting`, its note says to open
+   the app). A blocked session is never nudged.
+   No ask comment when the agent already asked: the card's newest comment is an agent's, written
+   at most 30 minutes before the session stopped, and the card is flagged for Dave or in Review.
+   The card is routed to the session all the same.
 5. The episode ends when the session no longer waits or leaves the list: the human flag goes off
    when the dispatcher set it, and `POST /api/inbox/clear` takes the card out of the Inbox (best
    effort: a 404 is ignored). When an agent other than the dispatcher wrote the card's newest
@@ -227,7 +232,7 @@ The service is `deploy/kanzo-dispatch.service` (see `deploy/README.md`).
 
 ---
 
-> **Version:** v5 · created 2026-11-21 13:26 EST · updated 2026-11-28
-> **Changes:** v5 2026-11-28 "Sessions that wait on Dave": a blocked background session's ask on its card, his answer resumes or reaches it; `asks` in status.json; flags `--ask-after`, `--ask-project`, `--no-asks`. v4 2026-11-24 Push: content-free Web Push when an agent answers, `push_key` and `push` in status.json, `--no-push`. v3 2026-11-24 status.json for the board ("What the board shows"); `@claude start`; nudge, then flag; burst guard; resume an ended session; idle stop on done cards; pictures in a follow-up; flags `--status`, `--burst`, `--idle-stop`. v2 2026-11-23 a comment goes to the live session already on the card; `@claude new`; stop only detaches an adopted session. v1 initial.
+> **Version:** v6 · created 2026-11-21 13:26 EST · updated 2026-11-28 15:19 EST
+> **Changes:** v6 2026-11-28 a waiting session with a process is typed into; no ask comment when the agent asked on the card itself; one dispatcher per state file. v5 2026-11-28 "Sessions that wait on Dave": a blocked background session's ask on its card, his answer resumes or reaches it; `asks` in status.json; flags `--ask-after`, `--ask-project`, `--no-asks`. v4 2026-11-24 Push: content-free Web Push when an agent answers, `push_key` and `push` in status.json, `--no-push`. v3 2026-11-24 status.json for the board ("What the board shows"); `@claude start`; nudge, then flag; burst guard; resume an ended session; idle stop on done cards; pictures in a follow-up; flags `--status`, `--burst`, `--idle-stop`. v2 2026-11-23 a comment goes to the live session already on the card; `@claude new`; stop only detaches an adopted session. v1 initial.
 > **This file:** /home/claude/dev/kanzo/agent/dispatch/README.md (repo dwertz-at-blenko/kanzo, branch public-url)
 > **Session:** b1475961-06d7-40b0-9eff-f2b47896b6bb · vps as claude · cwd /home/claude/dev
