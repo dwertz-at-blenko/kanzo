@@ -1631,5 +1631,22 @@ class Push(Base):
         self.assertNotIn(self.key, pathlib.Path(self.fake_dir, "calls.jsonl").read_text())
 
 
+
+class OnlyOne(unittest.TestCase):
+    def test_a_second_dispatcher_on_the_same_state_stops(self):
+        with tempfile.TemporaryDirectory() as d:
+            state = os.path.join(d, "dispatch", "state.json")
+            first = kd.only_one(state)
+            self.assertIsNotNone(first)
+            with open(state + ".lock") as f:
+                self.assertEqual(f.read().strip(), str(os.getpid()))
+            self.assertIsNone(kd.only_one(state))
+            self.assertEqual(kd.main(["--once", "--no-push", "--no-asks", "--state", state]), 3)
+            self.assertFalse(os.path.exists(state))          # it stopped before it touched anything
+            first.close()
+            second = kd.only_one(state)                       # the first one is gone: the lock is free
+            self.assertIsNotNone(second)
+            second.close()
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

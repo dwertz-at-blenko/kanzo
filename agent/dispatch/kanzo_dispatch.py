@@ -47,6 +47,7 @@ there reaches it, resuming it when its process is gone (Dispatcher.asks_pass).
     kanzo_dispatch.py --once --dry-run       # say what it would do, change nothing
 """
 import argparse
+import fcntl
 import base64
 import datetime
 import glob
@@ -1993,6 +1994,24 @@ class Dispatcher:
             return set()
 
 
+def only_one(state_path):
+    """Hold <state>.lock for the life of the process, with this pid in it (deploy/run-dispatch.sh
+    --stop reads it). -> the open file, or None when another dispatcher holds it: two on one state
+    file would send every comment twice."""
+    os.makedirs(os.path.dirname(state_path) or ".", exist_ok=True)
+    f = open(state_path + ".lock", "a+")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.close()
+        return None
+    f.seek(0)
+    f.truncate()
+    f.write(f"{os.getpid()}\n")
+    f.flush()
+    return f
+
+
 def main(argv=None):
     raw_key = take_push_key()                            # first: nothing below, and no child, sees it in the environment
     p = argparse.ArgumentParser(description="Start a Claude session from a card when Dave comments on it.")
@@ -2023,6 +2042,10 @@ def main(argv=None):
                    help=f"project for a new ask card when no project's repo matches the folder (default {ASK_PROJECT})")
     a = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    lock = None if a.dry_run else only_one(a.state)
+    if lock is None and not a.dry_run:
+        log.error("another kanzo-dispatch already runs on %s; this one stops", a.state)
+        return 3
     push = Push(raw_key, a.db, off="--no-push" if a.no_push else None)
     del raw_key
     d = Dispatcher(Board(a.board), Claude(a.claude), a.state, os.path.abspath(a.dev_root), a.db,
